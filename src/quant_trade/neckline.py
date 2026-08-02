@@ -50,9 +50,11 @@ def break_below_at(
         if mode == "loose":
             return i
         if mode == "standard":
+            # Return the SECOND (confirming) bar of the two-bar pair, since the
+            # break is only known once bar i+1 confirms it.
             if i + 1 < n and not np.isnan(closes[i + 1]) and not np.isnan(threshold[i + 1]):
                 if closes[i + 1] < threshold[i + 1]:
-                    return i
+                    return i + 1
             continue
         if mode == "strict":
             if volume is None or vol_ma is None:
@@ -88,9 +90,10 @@ def break_above_at(
         if mode == "loose":
             return i
         if mode == "standard":
+            # Return the SECOND (confirming) bar of the two-bar pair.
             if i + 1 < n and not np.isnan(closes[i + 1]) and not np.isnan(threshold[i + 1]):
                 if closes[i + 1] > threshold[i + 1]:
-                    return i
+                    return i + 1
             continue
         if mode == "strict":
             if volume is None or vol_ma is None:

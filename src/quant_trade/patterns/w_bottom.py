@@ -10,7 +10,7 @@ from ..neckline import (
     invalid_long,
     neckline_long,
 )
-from ..pivots import find_pivot_highs, find_pivot_lows, pivot_indices
+from ..pivots import find_pivot_lows, pivot_indices
 from .common import Signal, make_signal
 
 
@@ -34,14 +34,12 @@ def detect_w_bottom(
 ) -> list[Signal]:
     """Scan df for W-bottom long candidates.
 
-    Per user instruction (kept as-is from strategy.md line 31), the divergence
-    rule 6 is the original wording: 'second high RSI < first high RSI'. We
-    look for pivot highs inside [L1, L2] to honor the literal text. If no
-    pivot highs are present in that window, the rule is treated as a no-op
-    (does not block) so the rest of the rules can still trigger.
+    Rule 6 (divergence) is treated the same way as S1 rule 6: a priority hint,
+    not a blocking filter. Bottom divergence = L2 RSI > L1 RSI (spec §1). The
+    original (logically inverted) wording in strategy.md was replaced per user
+    request; see README "Known TODOs".
     """
     pivot_low_mask = find_pivot_lows(df, pivot_params)
-    pivot_high_mask = find_pivot_highs(df, pivot_params)
     l_indices = pivot_indices(pivot_low_mask)
     if len(l_indices) < 2:
         return []
@@ -65,8 +63,10 @@ def detect_w_bottom(
 
     for i, l1 in enumerate(l_indices):
         for l2 in l_indices[i + 1 :]:
-            if not (min_dist <= (l2 - l1) <= max_dist):
+            if l2 - l1 < min_dist:
                 continue
+            if l2 - l1 > max_dist:
+                break  # l_indices sorted ascending: all later l2 are also out of range
             l1_price = float(low.iloc[l1])
             l2_price = float(low.iloc[l2])
             atr_l2 = float(atr_s.iloc[l2])
@@ -86,19 +86,11 @@ def detect_w_bottom(
             if not rsi_band_ok:
                 continue
 
-            # Rule 6 — kept as original text: 'second high RSI < first high RSI'.
-            # We look for pivot highs inside [l1, l2] and compare the first two.
-            h_in_window = [j for j in pivot_indices(pivot_high_mask) if l1 <= j <= l2]
-            rule6_ok = True  # default: not blocking
-            if len(h_in_window) >= 2:
-                rh1, rh2 = h_in_window[0], h_in_window[1]
-                rule6_ok = float(rsi_s.iloc[rh2]) < float(rsi_s.iloc[rh1])
-            if not rule6_ok:
-                continue
-
+            # Rule 6: bottom divergence (L2 RSI > L1 RSI). Priority hint,
+            # informational only — not a blocking filter (mirrors S1 rule 6).
             l1_rsi = float(rsi_s.iloc[l1])
             l2_rsi = float(rsi_s.iloc[l2])
-            divergence = l2_rsi > l1_rsi  # informational only
+            divergence = l2_rsi > l1_rsi
 
             start = l2 + 1
             if start >= n:

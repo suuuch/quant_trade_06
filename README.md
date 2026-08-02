@@ -27,6 +27,13 @@ uv run python -m quant_trade.main \
   --symbols 000001.SZ,600519.SH,300750.SZ \
   --start 20240101 --end 20260720
 
+# Generate an HTML trade-review report
+uv run python -m quant_trade.main \
+  --symbols 000001.SZ,000002.SZ,600036.SH \
+  --start 20240101 --end 20260720 \
+  --report reports/run.html
+# Then open reports/run.html in your browser.
+
 # Tests
 uv run pytest -q
 ```
@@ -51,6 +58,7 @@ src/quant_trade/
 ├── neckline.py          # neckline + break/above/below + invalidation
 ├── engine.py            # run all detectors on one symbol
 ├── strategy_bt.py       # backtrader strategy (consumes pre-computed signals)
+├── report.py            # Plotly-based HTML trade-review report
 ├── main.py              # CLI entry
 └── patterns/
     ├── common.py        # Signal dataclass + helpers
@@ -61,6 +69,22 @@ tests/                    # pytest unit tests
 docs/                     # strategy.md (notes) + strategy_spec.md (spec)
 scripts/                  # one-off DB explorers / smoke tests
 ```
+
+## Trade review report
+
+Pass `--report <path.html>` to `main.py` and you'll get a single self-contained
+HTML file (Plotly loaded from CDN) with:
+
+- A summary card row: total trades, wins / losses, win rate, total / avg PnL, profit factor
+- An overview table linking to each trade's detail
+- One candlestick chart per trade (±30 bars around entry) with:
+  - MA20 / MA30 overlays
+  - Pivot high / low markers
+  - Horizontal lines for entry, stop loss, invalidation, exit
+  - Volume bars
+  - RSI(14) subplot with the 25 / 45 / 55 / 75 reference bands
+
+Open the file in any browser; charts are interactive (zoom, pan, hover).
 
 ## Output
 
@@ -76,8 +100,9 @@ No take-profit in v1 — exits are stop/invalidation/end-of-data.
 
 ## Known TODOs (from spec §11)
 
-- W-bottom rule 6 keeps the original (logically inverted) text per user
-  instruction. Watch the backtest for spurious filtering or non-filtering.
+- W-bottom rule 6 is a non-blocking bottom-divergence hint (L2 RSI > L1 RSI),
+  mirroring S1's divergence rule. The original strategy.md wording was inverted
+  and has been replaced; the spec §5.2 note is stale.
 - No take-profit; first version exits only on stop / invalidation / EOD.
 - Single-frequency only (daily); hourly needs an hourly OHLCV source.
 - Backtest is one-symbol-at-a-time. Multi-symbol portfolio aggregation is

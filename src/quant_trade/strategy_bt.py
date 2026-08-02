@@ -38,6 +38,7 @@ class SignalStrategy(bt.Strategy):
         self.trade_log: list[dict] = []
         self._order = None
         self._entry_bar: dict[str, int] = {}
+        self._sig_seq = 0
 
     def log(self, msg: str) -> None:
         if self.p.printlog:
@@ -79,7 +80,11 @@ class SignalStrategy(bt.Strategy):
 
         # 2. New entries
         for sig in self.signals_by_date.get(cur_date, []):
-            sig_id = f"{sig.pattern}_{sig.direction}_{sig.triggered_at.strftime('%Y%m%d')}"
+            self._sig_seq += 1
+            sig_id = (
+                f"{sig.pattern}_{sig.direction}_"
+                f"{sig.triggered_at.strftime('%Y%m%d')}_{self._sig_seq}"
+            )
             if sig_id in self.open_positions:
                 continue
             price = sig.trigger_price
@@ -128,6 +133,8 @@ class SignalStrategy(bt.Strategy):
                 "exit_price": price,
                 "size": pos.size,
                 "pnl": pnl,
+                "stop_loss": pos.signal.stop_loss,
+                "invalidation_price": pos.signal.invalidation_price,
                 "reason": reason,
             }
         )

@@ -59,8 +59,8 @@ def test_break_below_at_standard() -> None:
     neckline = 96
     idx = break_below_at(close, a, neckline, buffer_atr=0.1, mode="standard")
     # bar 2 close=95.5 < 95.8 and bar 3 close=90 < 95.8 → two consecutive;
-    # our impl returns the FIRST of the pair (bar 2).
-    assert idx == 2
+    # the break is only known at bar 3 (the confirming bar), so we return 3.
+    assert idx == 3
 
 
 def test_break_below_at_standard_requires_two_consecutive() -> None:

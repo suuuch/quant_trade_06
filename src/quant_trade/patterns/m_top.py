@@ -61,8 +61,10 @@ def detect_m_top(
 
     for i, h1 in enumerate(h_indices):
         for h2 in h_indices[i + 1 :]:
-            if not (min_dist <= (h2 - h1) <= max_dist):
+            if h2 - h1 < min_dist:
                 continue
+            if h2 - h1 > max_dist:
+                break  # h_indices sorted ascending: all later h2 are also out of range
             h1_price = float(high.iloc[h1])
             h2_price = float(high.iloc[h2])
             atr_h2 = float(atr_s.iloc[h2])

@@ -3,6 +3,7 @@
 Usage:
     uv run python -m quant_trade.main --symbol 000001.SZ --start 20240101 --end 20260720
     uv run python -m quant_trade.main --symbols 000001.SZ,600519.SH --frequency daily
+    uv run python -m quant_trade.main --symbol 000001.SZ --report reports/run.html
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import pandas as pd
 from .config import StrategyParams
 from .data_source import CsvDataSource, DataSource, PostgresDataSource
 from .engine import run_engine
+from .report import generate_report, trades_from_results
 from .strategy_bt import SignalStrategy
 
 
@@ -80,6 +82,11 @@ def main() -> None:
     ap.add_argument("--position-pct", type=float, default=0.10)
     ap.add_argument("--csv", help="Use a local CSV (date,open,high,low,close,volume) instead of PG")
     ap.add_argument("--printlog", action="store_true")
+    ap.add_argument(
+        "--report",
+        help="Write an HTML trade review to this path (e.g. reports/run.html).",
+        default=None,
+    )
     args = ap.parse_args()
 
     if args.symbol:
@@ -92,7 +99,9 @@ def main() -> None:
     params = StrategyParams(frequency=args.frequency)
 
     ds = build_data_source(args)
-    total_signals: list = []
+    symbol_data: dict[str, pd.DataFrame] = {}
+    symbol_logs: list[tuple[str, list[dict]]] = []
+
     for sym in symbols:
         df, sigs = signals_for_symbol(ds, sym, params, args.start, args.end)
         print(f"\n=== {sym} ===")
@@ -103,9 +112,9 @@ def main() -> None:
                 f" entry={s.trigger_price:8.2f} stop={s.stop_loss:8.2f} "
                 f"inval={s.invalidation_price:8.2f} rsi={s.rsi_at_trigger:5.1f}"
             )
-        total_signals.extend(sigs)
         if df.empty or not sigs:
             continue
+        symbol_data[sym] = df
         cerebro, strat = run_backtest(
             df, sigs,
             initial_cash=args.cash,
@@ -134,6 +143,20 @@ def main() -> None:
                     f" {t['entry_price']:.2f} -> {t['exit_price']:.2f}"
                     f" size={t['size']:5d} pnl={t['pnl']:9.2f} ({t['reason']})"
                 )
+            symbol_logs.append((sym, strat.trade_log))
+
+    if args.report:
+        trades = trades_from_results(symbol_logs)
+        if not trades:
+            print("\nNo trades to report; skipping HTML output.")
+            return
+        out = generate_report(
+            trades=trades,
+            data_by_symbol=symbol_data,
+            output_path=args.report,
+            pivot_params=params.pivot,
+        )
+        print(f"\nReport written: {out}")
 
 
 if __name__ == "__main__":
