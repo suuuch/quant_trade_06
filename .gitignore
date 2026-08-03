@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local backtest datasets
+/data/*.duckdb
+/data/*.duckdb.wal
