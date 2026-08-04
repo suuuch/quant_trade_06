@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--target-id", help="QQ openid; defaults to environment")
     parser.add_argument("--lookback-bars", type=int, default=240)
-    parser.add_argument("--delay", type=float, default=1.0)
+    parser.add_argument("--delay", type=float, default=10.0)
     parser.add_argument(
         "--direction",
         choices=("long", "short", "both"),
@@ -111,8 +111,8 @@ def main() -> None:
     client = QQBotClient()
     client.send_text(target_type, target_id, summary)
     failures: list[str] = []
-    for index, (match, image_path) in enumerate(rendered):
-        if index > 0 and args.delay:
+    for match, image_path in rendered:
+        if args.delay:
             time.sleep(args.delay)
         try:
             client.send_image(
@@ -135,10 +135,17 @@ def _signal_text(match: SignalMatch) -> str:
     direction = "多头 W 底" if signal.direction is Direction.LONG else "空头 M 顶"
     return (
         f"[{direction}] {match.symbol} {match.name} ({match.industry})\n"
+        f"总市值 {_format_market_cap(match.market_cap_cny)} | "
         f"日期 {signal.timestamp:%Y-%m-%d} | 收盘 {signal.close:.3f} | "
         f"RSI {signal.rsi:.2f} | 颈线 {signal.neckline:.3f} | "
         f"ATR {signal.atr:.3f}"
     )
+
+
+def _format_market_cap(value: float | None) -> str:
+    if value is None:
+        return "未知"
+    return f"{value / 100_000_000:.2f} 亿元"
 
 
 def _default_target_id(target_type: QQTargetType) -> str:

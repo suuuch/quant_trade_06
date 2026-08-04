@@ -56,6 +56,8 @@ class SignalMatch:
     frame: pd.DataFrame
     signal: Signal
     engine: Rsi50SignalEngine
+    market_cap_cny: float | None = None
+    circulating_market_cap_cny: float | None = None
 
 
 @dataclass(frozen=True)
@@ -118,7 +120,12 @@ def scan_database_latest(
                 if match is not None:
                     matches.append(match)
 
-    return ScanBatch(scan_date, scanned_symbols, stale_symbols, matches)
+    return ScanBatch(
+        scan_date,
+        scanned_symbols,
+        stale_symbols,
+        sort_matches_by_market_cap(matches),
+    )
 
 
 def scan_symbol_frame(
@@ -126,6 +133,9 @@ def scan_symbol_frame(
     name: str,
     industry: str,
     frame: pd.DataFrame,
+    *,
+    market_cap_cny: float | None = None,
+    circulating_market_cap_cny: float | None = None,
 ) -> SignalMatch | None:
     """Evaluate one sorted adjusted OHLCV frame on its latest bar."""
     engine = Rsi50SignalEngine()
@@ -145,7 +155,28 @@ def scan_symbol_frame(
             latest_signal = signal
     if latest_signal is None:
         return None
-    return SignalMatch(symbol, name, industry, frame, latest_signal, engine)
+    return SignalMatch(
+        symbol,
+        name,
+        industry,
+        frame,
+        latest_signal,
+        engine,
+        market_cap_cny,
+        circulating_market_cap_cny,
+    )
+
+
+def sort_matches_by_market_cap(matches: list[SignalMatch]) -> list[SignalMatch]:
+    """Sort signals by total market cap descending, with missing values last."""
+    return sorted(
+        matches,
+        key=lambda match: (
+            match.market_cap_cny is not None,
+            match.market_cap_cny or 0.0,
+        ),
+        reverse=True,
+    )
 
 
 def render_signal_chart(
@@ -285,8 +316,22 @@ def _evaluate_rows(
     symbol = str(frame["symbol"].iloc[0])
     name = str(frame["name"].iloc[0])
     industry = str(frame["industry"].iloc[0] or "")
+    total_mv = frame["total_mv"].iloc[-1]
+    circ_mv = frame["circ_mv"].iloc[-1]
+    market_cap_cny = None if pd.isna(total_mv) else float(total_mv) * 10_000.0
+    circulating_market_cap_cny = None if pd.isna(circ_mv) else float(circ_mv) * 10_000.0
     bars = frame.set_index("trade_date")[["open", "high", "low", "close", "volume"]]
-    return scan_symbol_frame(symbol, name, industry, bars), False
+    return (
+        scan_symbol_frame(
+            symbol,
+            name,
+            industry,
+            bars,
+            market_cap_cny=market_cap_cny,
+            circulating_market_cap_cny=circulating_market_cap_cny,
+        ),
+        False,
+    )
 
 
 def _required_env(name: str) -> str:
@@ -308,6 +353,8 @@ _SCAN_COLUMNS = [
     "volume_lots",
     "adj_factor",
     "latest_adj_factor",
+    "total_mv",
+    "circ_mv",
 ]
 
 _SCAN_QUERY = """
@@ -323,6 +370,8 @@ _SCAN_QUERY = """
             d.close AS close_raw,
             d.vol AS volume_lots,
             a.adj_factor,
+            db.total_mv,
+            db.circ_mv,
             first_value(a.adj_factor) OVER (
                 PARTITION BY d.ts_code ORDER BY d.trade_date DESC
             ) AS latest_adj_factor,
@@ -334,6 +383,9 @@ _SCAN_QUERY = """
           ON a.ts_code = d.ts_code
          AND a.trade_date = d.trade_date
         JOIN public.stock_basic AS b ON b.ts_code = d.ts_code
+        LEFT JOIN tushare.daily_basic AS db
+          ON db.ts_code = d.ts_code
+         AND db.trade_date = d.trade_date
     )
     SELECT
         symbol,
@@ -346,7 +398,9 @@ _SCAN_QUERY = """
         close_raw,
         volume_lots,
         adj_factor,
-        latest_adj_factor
+        latest_adj_factor,
+        total_mv,
+        circ_mv
     FROM ranked
     WHERE recent_rank <= %s
     ORDER BY symbol, trade_date

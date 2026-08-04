@@ -5,7 +5,11 @@ from pathlib import Path
 import pandas as pd
 
 from quant_trade.rsi50 import Direction
-from quant_trade.scanner import render_signal_chart, scan_symbol_frame
+from quant_trade.scanner import (
+    render_signal_chart,
+    scan_symbol_frame,
+    sort_matches_by_market_cap,
+)
 
 
 def _latest_long_frame() -> pd.DataFrame:
@@ -52,3 +56,31 @@ def test_render_signal_chart_writes_png(tmp_path: Path) -> None:
     output = render_signal_chart(match, tmp_path / "signal.png")
 
     assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_matches_are_sorted_by_market_cap_descending() -> None:
+    frame = _latest_long_frame()
+    small = scan_symbol_frame(
+        "000001.SZ",
+        "Small",
+        "Test",
+        frame,
+        market_cap_cny=10_000_000_000.0,
+    )
+    large = scan_symbol_frame(
+        "600000.SH",
+        "Large",
+        "Test",
+        frame,
+        market_cap_cny=100_000_000_000.0,
+    )
+    missing = scan_symbol_frame("300001.SZ", "Missing", "Test", frame)
+    assert small is not None and large is not None and missing is not None
+
+    ordered = sort_matches_by_market_cap([small, missing, large])
+
+    assert [match.symbol for match in ordered] == [
+        "600000.SH",
+        "000001.SZ",
+        "300001.SZ",
+    ]
