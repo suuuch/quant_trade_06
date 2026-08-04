@@ -90,12 +90,7 @@ def _audit_signal(
     previous_slow = engine.slow_ma_values[current - 1]
     if second_atr is None:
         raise ValueError("signal second pivot has no ATR value")
-    if (
-        fast is None
-        or previous_fast is None
-        or slow is None
-        or previous_slow is None
-    ):
+    if fast is None or previous_fast is None or slow is None or previous_slow is None:
         raise ValueError("signal has incomplete moving-average values")
 
     if is_long:

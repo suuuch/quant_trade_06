@@ -6,11 +6,13 @@ requires-python = ">=3.11"
 dependencies = [
     "backtrader>=1.9.78.123",
     "duckdb>=1.5.5",
+    "matplotlib>=3.11.1",
     "numpy>=2.4.6",
     "pandas>=3.0.5",
     "plotly>=6.9.0",
     "psycopg[binary]>=3.3.4",
     "python-dotenv>=1.2.2",
+    "qq-botpy>=1.2.1",
 ]
 
 [dependency-groups]
