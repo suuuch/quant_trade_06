@@ -54,7 +54,7 @@
 
 - 收盘突破 W 底颈线
 
-- RSI 同时重新站上 55
+- RSI 同时位于 50–51（含边界）
 
 空头：
 
@@ -389,6 +389,5 @@ min_prominence = 0.8 ATR
 min_middle_pullback = 1.2 ATR
 max_top_difference = 1.0 ATR
 ```
-
 
 

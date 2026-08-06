@@ -1,13 +1,14 @@
-"""Scan the PostgreSQL A-share universe for latest RSI 50 signals."""
+"""Scan PostgreSQL market universes for latest RSI 50 signals."""
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
 import matplotlib
@@ -20,6 +21,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
 from quant_trade.rsi50 import Bar, Direction, Rsi50SignalEngine, Signal
+
+Market = Literal["a", "us"]
+logger = logging.getLogger(__name__)
 
 plt.rcParams["font.sans-serif"] = [
     "Noto Sans CJK SC",
@@ -79,6 +83,7 @@ class SignalMatch:
     engine: Rsi50SignalEngine
     market_cap_cny: float | None = None
     circulating_market_cap_cny: float | None = None
+    market: Market = "a"
 
 
 @dataclass(frozen=True)
@@ -106,11 +111,13 @@ def select_matches_for_delivery(
 def scan_database_latest(
     settings: DatabaseSettings,
     *,
+    market: Market = "a",
     lookback_bars: int = 240,
     enforce_freshness: bool = True,
     today: date | None = None,
 ) -> ScanBatch:
-    """Stream recent bars for all A shares and evaluate each latest bar."""
+    """Stream recent bars for one market and evaluate each latest bar."""
+    _validate_market(market)
     if lookback_bars < 90:
         raise ValueError("lookback_bars must be at least 90")
     connection_kwargs = {
@@ -122,11 +129,12 @@ def scan_database_latest(
         "connect_timeout": 10,
     }
     with psycopg.connect(**connection_kwargs) as connection:
-        status = read_market_data_status(connection, today=today)
+        status = read_market_data_status(connection, market=market, today=today)
         if enforce_freshness:
             validate_market_data_freshness(status)
         if status.daily_latest is None:
-            raise ValueError("tushare.daily contains no data")
+            source = "tushare.daily" if market == "a" else "public.stock_klines"
+            raise ValueError(f"{source} contains no data")
         scan_date = status.daily_latest
 
         matches: list[SignalMatch] = []
@@ -134,13 +142,14 @@ def scan_database_latest(
         stale_symbols = 0
         with connection.cursor(name="rsi50_universe_scan") as cursor:
             cursor.itersize = 10_000
-            cursor.execute(_SCAN_QUERY, (lookback_bars,))
+            query = _A_SHARE_SCAN_QUERY if market == "a" else _US_SHARE_SCAN_QUERY
+            cursor.execute(query, (lookback_bars,))
             current_symbol = ""
             rows: list[tuple[Any, ...]] = []
             for row in cursor:
                 symbol = str(row[0])
                 if current_symbol and symbol != current_symbol:
-                    match, stale = _evaluate_rows(rows, scan_date)
+                    match, stale = _evaluate_rows(rows, scan_date, market)
                     scanned_symbols += 1
                     stale_symbols += int(stale)
                     if match is not None:
@@ -149,7 +158,7 @@ def scan_database_latest(
                 current_symbol = symbol
                 rows.append(tuple(row))
             if rows:
-                match, stale = _evaluate_rows(rows, scan_date)
+                match, stale = _evaluate_rows(rows, scan_date, market)
                 scanned_symbols += 1
                 stale_symbols += int(stale)
                 if match is not None:
@@ -166,13 +175,16 @@ def scan_database_latest(
 def read_market_data_status(
     connection: psycopg.Connection[Any],
     *,
+    market: Market = "a",
     today: date | None = None,
 ) -> MarketDataStatus:
     """Read trading-calendar membership and latest required table dates."""
+    _validate_market(market)
     current_date = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
     with connection.cursor() as cursor:
-        cursor.execute(
-            """
+        if market == "a":
+            cursor.execute(
+                """
             SELECT
                 EXISTS (
                     SELECT 1
@@ -181,9 +193,20 @@ def read_market_data_status(
                 ),
                 (SELECT max(trade_date) FROM tushare.daily),
                 (SELECT max(trade_date) FROM tushare.adj_factor)
-            """,
-            (current_date,),
-        )
+                """,
+                (current_date,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT
+                    false,
+                    max(kline_date),
+                    max(kline_date)
+                FROM public.stock_klines
+                WHERE code LIKE 'US.%%'
+                """
+            )
         row = cursor.fetchone()
     if row is None:
         raise ValueError("failed to read market-data freshness status")
@@ -222,8 +245,10 @@ def scan_symbol_frame(
     *,
     market_cap_cny: float | None = None,
     circulating_market_cap_cny: float | None = None,
+    market: Market = "a",
 ) -> SignalMatch | None:
     """Evaluate one sorted adjusted OHLCV frame on its latest bar."""
+    _validate_market(market)
     engine = Rsi50SignalEngine()
     latest_signal: Signal | None = None
     for index, (timestamp, row) in enumerate(frame.iterrows()):
@@ -250,6 +275,7 @@ def scan_symbol_frame(
         engine,
         market_cap_cny,
         circulating_market_cap_cny,
+        market,
     )
 
 
@@ -362,12 +388,12 @@ def render_signal_chart(
     price_axis.set_title(
         f"{match.symbol} {match.name} | {direction} | {signal.timestamp:%Y-%m-%d}"
     )
-    price_axis.set_ylabel("QFQ Price")
+    price_axis.set_ylabel("QFQ Price" if match.market == "a" else "Price")
     price_axis.grid(alpha=0.18)
     price_axis.legend(loc="upper left", ncols=4, fontsize=8)
 
     rsi_axis.plot(x_values, rsi_values, color="#7a4cc2", linewidth=1.2)
-    for level in (45, 50, 55):
+    for level in (45, 50, 51, 55):
         rsi_axis.axhline(level, color="#888888", linestyle=":", linewidth=0.8)
     rsi_axis.scatter([trigger_x], [signal.rsi], color=signal_color, s=55, zorder=5)
     rsi_axis.set_ylim(0, 100)
@@ -417,17 +443,38 @@ def render_signal_sheet(
 def _evaluate_rows(
     rows: list[tuple[Any, ...]],
     scan_date: date,
+    market: Market,
 ) -> tuple[SignalMatch | None, bool]:
     frame = pd.DataFrame(rows, columns=_SCAN_COLUMNS)
     frame["trade_date"] = pd.to_datetime(frame["trade_date"], format="%Y%m%d")
     stale = frame["trade_date"].iloc[-1].date() != scan_date
     if stale:
         return None, True
-    adjustment = frame["adj_factor"] / frame["latest_adj_factor"]
+    adjustment = frame["adj_factor"].astype(float) / frame["latest_adj_factor"].astype(
+        float
+    )
     for column in ("open", "high", "low", "close"):
         frame[column] = frame[f"{column}_raw"] * adjustment
-    frame["volume"] = frame["volume_lots"] * 100.0
+    frame["volume"] = frame["volume_lots"] * (100.0 if market == "a" else 1.0)
     symbol = str(frame["symbol"].iloc[0])
+    prices = frame[["open", "high", "low", "close"]]
+    valid_prices = prices.notna().all(axis=1)
+    valid_prices &= prices.abs().lt(math.inf).all(axis=1)
+    valid_prices &= prices.gt(0.0).all(axis=1)
+    valid_prices &= frame["high"].ge(prices.max(axis=1))
+    valid_prices &= frame["low"].le(prices.min(axis=1))
+    invalid_dates = frame.loc[~valid_prices, "trade_date"]
+    if not invalid_dates.empty:
+        dates = ", ".join(timestamp.strftime("%Y-%m-%d") for timestamp in invalid_dates)
+        logger.warning(
+            "skipping %d invalid OHLC bar(s) for %s: %s",
+            len(invalid_dates),
+            symbol,
+            dates,
+        )
+    frame = frame.loc[valid_prices]
+    if frame.empty or frame["trade_date"].iloc[-1].date() != scan_date:
+        return None, True
     name = str(frame["name"].iloc[0])
     industry = str(frame["industry"].iloc[0] or "")
     total_mv = frame["total_mv"].iloc[-1]
@@ -443,6 +490,7 @@ def _evaluate_rows(
             bars,
             market_cap_cny=market_cap_cny,
             circulating_market_cap_cny=circulating_market_cap_cny,
+            market=market,
         ),
         False,
     )
@@ -455,10 +503,17 @@ def _required_env(name: str) -> str:
     return value
 
 
+def _validate_market(market: str) -> None:
+    if market not in ("a", "us"):
+        raise ValueError("market must be 'a' or 'us'")
+
+
 def _parse_database_date(value: object) -> date | None:
     if value is None:
         return None
-    return pd.to_datetime(str(value), format="%Y%m%d").date()
+    if isinstance(value, date):
+        return value
+    return pd.to_datetime(str(value)).date()
 
 
 def _format_optional_date(value: date | None) -> str:
@@ -481,7 +536,7 @@ _SCAN_COLUMNS = [
     "circ_mv",
 ]
 
-_SCAN_QUERY = """
+_A_SHARE_SCAN_QUERY = """
     WITH ranked AS (
         SELECT
             d.ts_code AS symbol,
@@ -528,4 +583,57 @@ _SCAN_QUERY = """
     FROM ranked
     WHERE recent_rank <= %s
     ORDER BY symbol, trade_date
+"""
+
+_US_SHARE_SCAN_QUERY = """
+    WITH priced AS (
+        SELECT
+            k.code AS symbol,
+            k.kline_date AS trade_date,
+            p.long_name AS name,
+            p.industry,
+            k.open AS open_raw,
+            k.high AS high_raw,
+            k.low AS low_raw,
+            k.close AS close_raw,
+            k.volume AS volume_lots,
+            1.0 AS adj_factor,
+            p.market_cap / 10000.0 AS total_mv,
+            NULL::double precision AS circ_mv,
+            1.0 AS latest_adj_factor,
+            row_number() OVER (
+                PARTITION BY k.code ORDER BY k.kline_date DESC
+            ) AS recent_rank
+        FROM public.stock_klines AS k
+        JOIN public.stock_profiles AS p ON p.code = k.code
+        WHERE k.code LIKE 'US.%%'
+          AND p.market_cap > 1000000000
+    ),
+    eligible AS (
+        SELECT symbol
+        FROM priced
+        WHERE recent_rank <= 50
+        GROUP BY symbol
+        HAVING count(close_raw * volume_lots) = 50
+           AND max(close_raw) FILTER (WHERE recent_rank = 1) > 15.0
+           AND avg(close_raw * volume_lots) > 10000000.0
+    )
+    SELECT
+        p.symbol,
+        p.trade_date,
+        p.name,
+        p.industry,
+        p.open_raw,
+        p.high_raw,
+        p.low_raw,
+        p.close_raw,
+        p.volume_lots,
+        p.adj_factor,
+        p.latest_adj_factor,
+        p.total_mv,
+        p.circ_mv
+    FROM priced AS p
+    JOIN eligible AS e ON e.symbol = p.symbol
+    WHERE p.recent_rank <= %s
+    ORDER BY p.symbol, p.trade_date
 """

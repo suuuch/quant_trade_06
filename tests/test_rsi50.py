@@ -32,6 +32,23 @@ def _pattern_closes() -> list[float]:
     ]
 
 
+def _long_rsi_50_to_51_closes() -> list[float]:
+    return [80.0] * 35 + [118.0, 119.0, 120.0, 121.0, 122.0] + [
+        85.0,
+        87.0,
+        89.0,
+        87.0,
+        86.0,
+        87.0,
+        86.0,
+        85.0,
+        86.0,
+        87.0,
+        88.0,
+        90.0,
+    ]
+
+
 def _signals_for_closes(closes: list[float]) -> list[Signal | None]:
     engine = Rsi50SignalEngine()
     start = datetime(2025, 1, 1)
@@ -66,6 +83,11 @@ def test_pivot_low_is_mirror_of_pivot_high() -> None:
 def test_config_rejects_invalid_pattern_distance() -> None:
     with pytest.raises(ValueError, match="min_pattern_distance"):
         Rsi50Config(min_pattern_distance=31, max_pattern_distance=30)
+
+
+def test_config_rejects_invalid_long_rsi_range() -> None:
+    with pytest.raises(ValueError, match="long_trigger_rsi_low"):
+        Rsi50Config(long_trigger_rsi_low=51.0, long_trigger_rsi_high=50.0)
 
 
 def test_engine_rejects_out_of_order_bars() -> None:
@@ -109,14 +131,16 @@ def test_pivot_is_added_only_after_confirmation_delay() -> None:
 
 
 def test_engine_emits_long_after_w_bottom_breakout() -> None:
-    signals = [signal for signal in _signals_for_closes(_pattern_closes()) if signal]
+    signals = [
+        signal for signal in _signals_for_closes(_long_rsi_50_to_51_closes()) if signal
+    ]
 
     assert len(signals) == 1
     assert signals[0].direction is Direction.LONG
     assert signals[0].first_pivot_index == 40
     assert signals[0].second_pivot_index == 47
     assert signals[0].close > signals[0].neckline + 0.1 * signals[0].atr
-    assert signals[0].rsi > 55.0
+    assert 50.0 <= signals[0].rsi <= 51.0
 
 
 def test_engine_emits_short_after_m_top_breakdown() -> None:

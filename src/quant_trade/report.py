@@ -98,8 +98,15 @@ def _audit_signal(
         break_threshold = signal.neckline + 0.1 * signal.atr
         action = "目标多仓 95%"
         pattern_name = "W 底"
-        rsi_rule = "RSI > 55"
-        rsi_pass = signal.rsi > 55.0
+        rsi_rule = (
+            f"{engine.config.long_trigger_rsi_low:g} ≤ RSI ≤ "
+            f"{engine.config.long_trigger_rsi_high:g}"
+        )
+        rsi_pass = (
+            engine.config.long_trigger_rsi_low
+            <= signal.rsi
+            <= engine.config.long_trigger_rsi_high
+        )
         trend_pass = fast > previous_fast and slow > previous_slow
         break_pass = signal.close > break_threshold
     else:

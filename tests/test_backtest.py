@@ -37,21 +37,21 @@ def test_backtest_requires_datetime_index() -> None:
 
 
 def test_backtest_executes_confirmed_long_signal() -> None:
-    closes = [100.0 + index * 0.5 for index in range(40)] + [
-        115.0,
-        117.0,
-        119.5,
-        119.0,
-        118.0,
-        117.5,
-        117.0,
-        116.0,
-        117.0,
-        118.0,
-        119.0,
-        121.5,
-        122.0,
-        123.0,
+    closes = [80.0] * 35 + [118.0, 119.0, 120.0, 121.0, 122.0] + [
+        85.0,
+        87.0,
+        89.0,
+        87.0,
+        86.0,
+        87.0,
+        86.0,
+        85.0,
+        86.0,
+        87.0,
+        88.0,
+        90.0,
+        91.0,
+        92.0,
     ]
     index = pd.date_range("2025-01-01", periods=len(closes), freq="D")
     close = pd.Series(closes, index=index)

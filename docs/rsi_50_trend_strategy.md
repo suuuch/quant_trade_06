@@ -45,7 +45,7 @@
 2. RSI 回落至 45–55。
 3. 价格形成 W 底，第二个底部可以是更高低点。
 4. 收盘价高于 W 底颈线加 0.1 ATR，不能使用盘中最高价触发。
-5. RSI 同时重新站上 55。
+5. RSI 同时位于 50–51（含边界）。
 
 ## 空头信号
 
@@ -59,7 +59,7 @@
 
 ## 核心逻辑
 
-RSI 到达 50 附近不能单独触发交易。RSI 45–55 只表示趋势中的回踩或反抽区域，必须同时得到均线趋势、W/M 价格形态、收盘突破和 RSI 动量的确认。
+RSI 到达 50 附近不能单独触发交易。多头触发时 RSI 必须位于 50–51；RSI 45–55 仍用于表示趋势中的回踩或反抽区域，并且必须同时得到均线趋势、W/M 价格形态和收盘突破确认。
 
 ## 当前参数
 
@@ -71,6 +71,8 @@ ma_slow = 30
 atr_period = 14
 rsi_zone_low = 45
 rsi_zone_high = 55
+long_trigger_rsi_low = 50
+long_trigger_rsi_high = 51
 pivot_left = 3
 pivot_right = 3
 min_pattern_distance = 5

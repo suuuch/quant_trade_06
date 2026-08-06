@@ -40,6 +40,8 @@ class Rsi50Config:
     atr_period: int = 14
     rsi_zone_low: float = 45.0
     rsi_zone_high: float = 55.0
+    long_trigger_rsi_low: float = 50.0
+    long_trigger_rsi_high: float = 51.0
     pivot_left: int = 3
     pivot_right: int = 3
     min_pattern_distance: int = 5
@@ -65,6 +67,10 @@ class Rsi50Config:
             raise ValueError("ma_fast must be less than ma_slow")
         if self.rsi_zone_low >= self.rsi_zone_high:
             raise ValueError("rsi_zone_low must be less than rsi_zone_high")
+        if self.long_trigger_rsi_low > self.long_trigger_rsi_high:
+            raise ValueError(
+                "long_trigger_rsi_low must not exceed long_trigger_rsi_high"
+            )
         if self.min_pattern_distance > self.max_pattern_distance:
             raise ValueError(
                 "min_pattern_distance must not exceed max_pattern_distance"
@@ -322,7 +328,9 @@ class Rsi50SignalEngine:
             and entered_zone
             and self.bars[current].close
             > pattern.neckline + self.config.break_buffer_atr * atr
-            and rsi > self.config.rsi_zone_high
+            and self.config.long_trigger_rsi_low
+            <= rsi
+            <= self.config.long_trigger_rsi_high
         )
 
     def _short_triggered(self, pattern: Pattern) -> bool:

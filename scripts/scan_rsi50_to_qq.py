@@ -26,6 +26,12 @@ from quant_trade.scanner import (
 def parse_args() -> argparse.Namespace:
     """Parse scan and delivery options."""
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--market",
+        choices=("a", "us"),
+        default="a",
+        help="market to scan: a for A shares (default), us for US shares",
+    )
     parser.add_argument("--send", action="store_true", help="send results to QQ")
     parser.add_argument(
         "--target-type",
@@ -76,6 +82,7 @@ def main() -> None:
     try:
         batch = scan_database_latest(
             DatabaseSettings.from_env(),
+            market=args.market,
             lookback_bars=args.lookback_bars,
             enforce_freshness=not args.skip_freshness_check,
         )
@@ -121,7 +128,7 @@ def main() -> None:
     short_count = len(batch.matches) - long_count
     data_age_days = (date.today() - batch.scan_date).days
     summary = (
-        f"RSI50 日线扫描 {batch.scan_date:%Y-%m-%d}\n"
+        f"RSI50 {_market_label(args.market)}日线扫描 {batch.scan_date:%Y-%m-%d}\n"
         f"扫描 {batch.scanned_symbols} 只，停牌/陈旧 {batch.stale_symbols} 只，"
         f"命中 {len(batch.matches)} 只（多 {long_count} / 空 {short_count}），"
         f"本次{'发送' if args.send else '选择'} {len(rendered)} 只，"
@@ -182,17 +189,22 @@ def _signal_text(match: SignalMatch) -> str:
     direction = "多头 W 底" if signal.direction is Direction.LONG else "空头 M 顶"
     return (
         f"[{direction}] {match.symbol} {match.name} ({match.industry})\n"
-        f"总市值 {_format_market_cap(match.market_cap_cny)} | "
+        f"总市值 {_format_market_cap(match.market_cap_cny, match.market)} | "
         f"日期 {signal.timestamp:%Y-%m-%d} | 收盘 {signal.close:.3f} | "
         f"RSI {signal.rsi:.2f} | 颈线 {signal.neckline:.3f} | "
         f"ATR {signal.atr:.3f}"
     )
 
 
-def _format_market_cap(value: float | None) -> str:
+def _format_market_cap(value: float | None, market: str = "a") -> str:
     if value is None:
         return "未知"
-    return f"{value / 100_000_000:.2f} 亿元"
+    unit = "亿美元" if market == "us" else "亿元"
+    return f"{value / 100_000_000:.2f} {unit}"
+
+
+def _market_label(market: str) -> str:
+    return "美股" if market == "us" else "A股"
 
 
 def _default_target_id(target_type: QQTargetType) -> str:

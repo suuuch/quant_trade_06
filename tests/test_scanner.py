@@ -1,7 +1,9 @@
 """Tests for latest-bar database scanning and PNG rendering."""
 
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pytest
@@ -9,8 +11,10 @@ from matplotlib import pyplot as plt
 
 from quant_trade.rsi50 import Direction
 from quant_trade.scanner import (
+    _US_SHARE_SCAN_QUERY,
     DataFreshnessError,
     MarketDataStatus,
+    _evaluate_rows,
     render_signal_chart,
     render_signal_sheet,
     scan_symbol_frame,
@@ -28,20 +32,24 @@ def test_chinese_font_candidates_include_linux_fonts() -> None:
 
 
 def _latest_long_frame() -> pd.DataFrame:
-    closes = [100.0 + index * 0.5 for index in range(40)] + [
-        115.0,
-        117.0,
-        119.5,
-        119.0,
-        118.0,
-        117.5,
-        117.0,
-        116.0,
-        117.0,
-        118.0,
-        119.0,
-        121.5,
-    ]
+    closes = (
+        [80.0] * 35
+        + [118.0, 119.0, 120.0, 121.0, 122.0]
+        + [
+            85.0,
+            87.0,
+            89.0,
+            87.0,
+            86.0,
+            87.0,
+            86.0,
+            85.0,
+            86.0,
+            87.0,
+            88.0,
+            90.0,
+        ]
+    )
     index = pd.date_range("2025-01-01", periods=len(closes), freq="D")
     close = pd.Series(closes, index=index)
     return pd.DataFrame(
@@ -62,6 +70,113 @@ def test_scan_symbol_returns_only_latest_signal() -> None:
     assert match is not None
     assert match.signal.direction is Direction.LONG
     assert match.signal.timestamp == _latest_long_frame().index[-1]
+
+
+def test_scan_symbol_defaults_to_a_share_market() -> None:
+    match = scan_symbol_frame("000001.SZ", "Test", "Bank", _latest_long_frame())
+
+    assert match is not None
+    assert match.market == "a"
+
+
+def test_scan_symbol_accepts_us_market() -> None:
+    match = scan_symbol_frame(
+        "US.AAPL",
+        "Apple",
+        "Consumer Electronics",
+        _latest_long_frame(),
+        market="us",
+    )
+
+    assert match is not None
+    assert match.market == "us"
+
+
+def test_scan_symbol_rejects_unknown_market() -> None:
+    with pytest.raises(ValueError, match="market must be 'a' or 'us'"):
+        scan_symbol_frame(
+            "INVALID",
+            "Test",
+            "Test",
+            _latest_long_frame(),
+            market="hk",  # type: ignore[arg-type]
+        )
+
+
+def test_us_scan_query_escapes_psycopg_percent_literal() -> None:
+    assert "LIKE 'US.%%'" in _US_SHARE_SCAN_QUERY
+
+
+def test_us_scan_query_applies_liquidity_and_size_filters() -> None:
+    assert "p.market_cap > 1000000000" in _US_SHARE_SCAN_QUERY
+    assert "count(close_raw * volume_lots) = 50" in _US_SHARE_SCAN_QUERY
+    assert "max(close_raw) FILTER (WHERE recent_rank = 1) > 15.0" in (
+        _US_SHARE_SCAN_QUERY
+    )
+    assert "avg(close_raw * volume_lots) > 10000000.0" in _US_SHARE_SCAN_QUERY
+
+
+def test_us_database_rows_accept_decimal_adjustment_factors() -> None:
+    frame = _latest_long_frame()
+    rows = _database_rows(frame)
+
+    match, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
+
+    assert stale is False
+    assert match is not None
+    assert match.symbol == "US.AAPL"
+
+
+def test_us_database_rows_skip_invalid_historical_ohlc(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    frame = _latest_long_frame()
+    rows = _database_rows(frame)
+    invalid = list(rows[0])
+    invalid[4] = 20.0
+    invalid[6] = 21.0
+    rows[0] = tuple(invalid)
+
+    match, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
+
+    assert stale is False
+    assert match is not None
+    assert "skipping 1 invalid OHLC bar(s) for US.AAPL" in caplog.text
+
+
+def test_us_database_rows_treat_invalid_latest_ohlc_as_stale() -> None:
+    frame = _latest_long_frame()
+    rows = _database_rows(frame)
+    invalid = list(rows[-1])
+    invalid[4] = 20.0
+    invalid[6] = 21.0
+    rows[-1] = tuple(invalid)
+
+    match, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
+
+    assert stale is True
+    assert match is None
+
+
+def _database_rows(frame: pd.DataFrame) -> list[tuple[object, ...]]:
+    return [
+        (
+            "US.AAPL",
+            cast(pd.Timestamp, timestamp).date(),
+            "Apple",
+            "Consumer Electronics",
+            float(row["open"]),
+            float(row["high"]),
+            float(row["low"]),
+            float(row["close"]),
+            float(row["volume"]),
+            Decimal("1.0"),
+            Decimal("1.0"),
+            Decimal("416797788.568"),
+            None,
+        )
+        for timestamp, row in frame.iterrows()
+    ]
 
 
 def test_render_signal_chart_writes_png(tmp_path: Path) -> None:
