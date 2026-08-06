@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from matplotlib import pyplot as plt
 
 from quant_trade.rsi50 import Direction
 from quant_trade.scanner import (
@@ -17,6 +18,13 @@ from quant_trade.scanner import (
     sort_matches_by_market_cap,
     validate_market_data_freshness,
 )
+
+
+def test_chinese_font_candidates_include_linux_fonts() -> None:
+    candidates = plt.rcParams["font.sans-serif"]
+
+    assert "Noto Sans CJK SC" in candidates
+    assert "WenQuanYi Zen Hei" in candidates
 
 
 def _latest_long_frame() -> pd.DataFrame:

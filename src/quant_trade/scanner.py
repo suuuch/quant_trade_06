@@ -21,7 +21,12 @@ from matplotlib.patches import Rectangle  # noqa: E402
 
 from quant_trade.rsi50 import Bar, Direction, Rsi50SignalEngine, Signal
 
-plt.rcParams["font.sans-serif"] = ["Arial Unicode MS", "DejaVu Sans"]
+plt.rcParams["font.sans-serif"] = [
+    "Noto Sans CJK SC",
+    "WenQuanYi Zen Hei",
+    "Arial Unicode MS",
+    "DejaVu Sans",
+]
 plt.rcParams["axes.unicode_minus"] = False
 
 
