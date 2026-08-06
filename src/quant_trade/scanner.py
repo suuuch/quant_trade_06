@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, cast
+from zoneinfo import ZoneInfo
 
 import matplotlib
 import pandas as pd
@@ -46,6 +48,20 @@ class DatabaseSettings:
         )
 
 
+class DataFreshnessError(RuntimeError):
+    """Raised when an open trading day is missing required daily data."""
+
+
+@dataclass(frozen=True)
+class MarketDataStatus:
+    """Trading-day and source-table freshness snapshot."""
+
+    today: date
+    is_trading_day: bool
+    daily_latest: date | None
+    adjustment_latest: date | None
+
+
 @dataclass
 class SignalMatch:
     """One latest-bar signal and the data needed to review it."""
@@ -70,10 +86,24 @@ class ScanBatch:
     matches: list[SignalMatch]
 
 
+def select_matches_for_delivery(
+    matches: list[SignalMatch],
+    max_send: int,
+) -> list[SignalMatch]:
+    """Return the highest-ranked matches allowed for one delivery batch."""
+    if max_send < 0:
+        raise ValueError("max_send must not be negative")
+    if max_send == 0:
+        return matches.copy()
+    return matches[:max_send]
+
+
 def scan_database_latest(
     settings: DatabaseSettings,
     *,
     lookback_bars: int = 240,
+    enforce_freshness: bool = True,
+    today: date | None = None,
 ) -> ScanBatch:
     """Stream recent bars for all A shares and evaluate each latest bar."""
     if lookback_bars < 90:
@@ -87,12 +117,12 @@ def scan_database_latest(
         "connect_timeout": 10,
     }
     with psycopg.connect(**connection_kwargs) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT max(trade_date) FROM tushare.daily")
-            latest_value = cursor.fetchone()
-        if latest_value is None or latest_value[0] is None:
+        status = read_market_data_status(connection, today=today)
+        if enforce_freshness:
+            validate_market_data_freshness(status)
+        if status.daily_latest is None:
             raise ValueError("tushare.daily contains no data")
-        scan_date = pd.to_datetime(str(latest_value[0]), format="%Y%m%d").date()
+        scan_date = status.daily_latest
 
         matches: list[SignalMatch] = []
         scanned_symbols = 0
@@ -126,6 +156,57 @@ def scan_database_latest(
         stale_symbols,
         sort_matches_by_market_cap(matches),
     )
+
+
+def read_market_data_status(
+    connection: psycopg.Connection[Any],
+    *,
+    today: date | None = None,
+) -> MarketDataStatus:
+    """Read trading-calendar membership and latest required table dates."""
+    current_date = today or datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                EXISTS (
+                    SELECT 1
+                    FROM public.trading_calendar
+                    WHERE trade_date = %s
+                ),
+                (SELECT max(trade_date) FROM tushare.daily),
+                (SELECT max(trade_date) FROM tushare.adj_factor)
+            """,
+            (current_date,),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        raise ValueError("failed to read market-data freshness status")
+    return MarketDataStatus(
+        today=current_date,
+        is_trading_day=bool(row[0]),
+        daily_latest=_parse_database_date(row[1]),
+        adjustment_latest=_parse_database_date(row[2]),
+    )
+
+
+def validate_market_data_freshness(status: MarketDataStatus) -> None:
+    """Fuse execution when today's open session lacks complete daily data."""
+    if not status.is_trading_day:
+        return
+    missing: list[str] = []
+    if status.daily_latest != status.today:
+        missing.append(f"tushare.daily={_format_optional_date(status.daily_latest)}")
+    if status.adjustment_latest != status.today:
+        missing.append(
+            f"tushare.adj_factor={_format_optional_date(status.adjustment_latest)}"
+        )
+    if missing:
+        detail = ", ".join(missing)
+        raise DataFreshnessError(
+            f"market data fuse: {status.today:%Y-%m-%d} is a trading day, "
+            f"but required data is missing ({detail})"
+        )
 
 
 def scan_symbol_frame(
@@ -300,6 +381,34 @@ def render_signal_chart(
     return destination
 
 
+def render_signal_sheet(
+    image_paths: list[Path],
+    output: str | Path,
+) -> Path:
+    """Combine individual signal charts into one QQ delivery image."""
+    if not image_paths:
+        raise ValueError("image_paths must not be empty")
+    columns = min(2, len(image_paths))
+    rows = math.ceil(len(image_paths) / columns)
+    figure, axes = plt.subplots(
+        rows,
+        columns,
+        figsize=(12 * columns, 8 * rows),
+        squeeze=False,
+    )
+    for axis, image_path in zip(axes.flat, image_paths, strict=False):
+        axis.imshow(plt.imread(image_path))
+        axis.axis("off")
+    for axis in axes.flat[len(image_paths) :]:
+        axis.axis("off")
+    destination = Path(output)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    figure.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
+    figure.savefig(destination, dpi=150)
+    plt.close(figure)
+    return destination
+
+
 def _evaluate_rows(
     rows: list[tuple[Any, ...]],
     scan_date: date,
@@ -339,6 +448,16 @@ def _required_env(name: str) -> str:
     if not value:
         raise ValueError(f"missing required environment variable: {name}")
     return value
+
+
+def _parse_database_date(value: object) -> date | None:
+    if value is None:
+        return None
+    return pd.to_datetime(str(value), format="%Y%m%d").date()
+
+
+def _format_optional_date(value: date | None) -> str:
+    return "missing" if value is None else value.isoformat()
 
 
 _SCAN_COLUMNS = [
