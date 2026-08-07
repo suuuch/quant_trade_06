@@ -116,6 +116,14 @@ def test_us_scan_query_applies_liquidity_and_size_filters() -> None:
     assert "avg(close_raw * volume_lots) > 10000000.0" in _US_SHARE_SCAN_QUERY
 
 
+def test_us_scan_query_selects_five_day_industry_leaders_and_laggards() -> None:
+    assert "p.recent_rank = 6" in _US_SHARE_SCAN_QUERY
+    assert "percentile_cont(0.5)" in _US_SHARE_SCAN_QUERY
+    assert "HAVING count(*) >= 5" in _US_SHARE_SCAN_QUERY
+    assert "gain_rank <= 10" in _US_SHARE_SCAN_QUERY
+    assert "loss_rank <= 10" in _US_SHARE_SCAN_QUERY
+
+
 def test_us_database_rows_accept_decimal_adjustment_factors() -> None:
     frame = _latest_long_frame()
     rows = _database_rows(frame)
@@ -158,7 +166,21 @@ def test_us_database_rows_treat_invalid_latest_ohlc_as_stale() -> None:
     assert match is None
 
 
-def _database_rows(frame: pd.DataFrame) -> list[tuple[object, ...]]:
+def test_us_database_rows_require_signal_to_match_industry_direction() -> None:
+    frame = _latest_long_frame()
+    rows = _database_rows(frame, sector_direction="short")
+
+    match, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
+
+    assert stale is False
+    assert match is None
+
+
+def _database_rows(
+    frame: pd.DataFrame,
+    *,
+    sector_direction: str = "long",
+) -> list[tuple[object, ...]]:
     return [
         (
             "US.AAPL",
@@ -174,6 +196,7 @@ def _database_rows(frame: pd.DataFrame) -> list[tuple[object, ...]]:
             Decimal("1.0"),
             Decimal("416797788.568"),
             None,
+            sector_direction,
         )
         for timestamp, row in frame.iterrows()
     ]

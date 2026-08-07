@@ -479,21 +479,26 @@ def _evaluate_rows(
     industry = str(frame["industry"].iloc[0] or "")
     total_mv = frame["total_mv"].iloc[-1]
     circ_mv = frame["circ_mv"].iloc[-1]
+    sector_direction = frame["sector_direction"].iloc[-1]
     market_cap_cny = None if pd.isna(total_mv) else float(total_mv) * 10_000.0
     circulating_market_cap_cny = None if pd.isna(circ_mv) else float(circ_mv) * 10_000.0
     bars = frame.set_index("trade_date")[["open", "high", "low", "close", "volume"]]
-    return (
-        scan_symbol_frame(
-            symbol,
-            name,
-            industry,
-            bars,
-            market_cap_cny=market_cap_cny,
-            circulating_market_cap_cny=circulating_market_cap_cny,
-            market=market,
-        ),
-        False,
+    match = scan_symbol_frame(
+        symbol,
+        name,
+        industry,
+        bars,
+        market_cap_cny=market_cap_cny,
+        circulating_market_cap_cny=circulating_market_cap_cny,
+        market=market,
     )
+    if (
+        match is not None
+        and isinstance(sector_direction, str)
+        and match.signal.direction.value != sector_direction
+    ):
+        return None, False
+    return match, False
 
 
 def _required_env(name: str) -> str:
@@ -534,6 +539,7 @@ _SCAN_COLUMNS = [
     "latest_adj_factor",
     "total_mv",
     "circ_mv",
+    "sector_direction",
 ]
 
 _A_SHARE_SCAN_QUERY = """
@@ -579,7 +585,8 @@ _A_SHARE_SCAN_QUERY = """
         adj_factor,
         latest_adj_factor,
         total_mv,
-        circ_mv
+        circ_mv,
+        NULL::text AS sector_direction
     FROM ranked
     WHERE recent_rank <= %s
     ORDER BY symbol, trade_date
@@ -610,13 +617,55 @@ _US_SHARE_SCAN_QUERY = """
           AND p.market_cap > 1000000000
     ),
     eligible AS (
-        SELECT symbol
+        SELECT
+            symbol,
+            max(industry) AS industry
         FROM priced
         WHERE recent_rank <= 50
         GROUP BY symbol
         HAVING count(close_raw * volume_lots) = 50
            AND max(close_raw) FILTER (WHERE recent_rank = 1) > 15.0
            AND avg(close_raw * volume_lots) > 10000000.0
+           AND max(industry) NOT IN ('', '-')
+    ),
+    stock_returns AS (
+        SELECT
+            p.symbol,
+            e.industry,
+            max(p.close_raw) FILTER (WHERE p.recent_rank = 1)
+                / max(p.close_raw) FILTER (WHERE p.recent_rank = 6)
+                - 1.0 AS return_5d
+        FROM priced AS p
+        JOIN eligible AS e ON e.symbol = p.symbol
+        WHERE p.recent_rank <= 6
+        GROUP BY p.symbol, e.industry
+        HAVING count(p.close_raw) = 6
+    ),
+    industry_returns AS (
+        SELECT
+            industry,
+            percentile_cont(0.5) WITHIN GROUP (ORDER BY return_5d)
+                AS return_5d,
+            count(*) AS stock_count
+        FROM stock_returns
+        GROUP BY industry
+        HAVING count(*) >= 5
+    ),
+    ranked_industries AS (
+        SELECT
+            industry,
+            row_number() OVER (ORDER BY return_5d DESC, industry) AS gain_rank,
+            row_number() OVER (ORDER BY return_5d, industry) AS loss_rank
+        FROM industry_returns
+    ),
+    selected_industries AS (
+        SELECT industry, 'long'::text AS sector_direction
+        FROM ranked_industries
+        WHERE gain_rank <= 10
+        UNION ALL
+        SELECT industry, 'short'::text AS sector_direction
+        FROM ranked_industries
+        WHERE loss_rank <= 10
     )
     SELECT
         p.symbol,
@@ -631,9 +680,11 @@ _US_SHARE_SCAN_QUERY = """
         p.adj_factor,
         p.latest_adj_factor,
         p.total_mv,
-        p.circ_mv
+        p.circ_mv,
+        s.sector_direction
     FROM priced AS p
     JOIN eligible AS e ON e.symbol = p.symbol
+    JOIN selected_industries AS s ON s.industry = e.industry
     WHERE p.recent_rank <= %s
     ORDER BY p.symbol, p.trade_date
 """
