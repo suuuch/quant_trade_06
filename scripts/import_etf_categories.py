@@ -106,6 +106,40 @@ def _create_tables(cursor: psycopg.Cursor[Any]) -> None:
         ON public.etf_holdings(etf_symbol, as_of_date DESC)
         """
     )
+    cursor.execute(
+        """
+        CREATE OR REPLACE VIEW public.stock_etf_categories AS
+        WITH latest_holding_dates AS (
+            SELECT
+                etf_symbol,
+                max(as_of_date) AS as_of_date
+            FROM public.etf_holdings
+            GROUP BY etf_symbol
+        )
+        SELECT
+            h.holding_code,
+            h.holding_symbol,
+            h.holding_name,
+            c.category_group,
+            c.category_label,
+            array_agg(h.etf_symbol ORDER BY h.weight DESC NULLS LAST) AS etf_symbols,
+            count(*) AS etf_count,
+            max(h.weight) AS max_weight,
+            sum(coalesce(h.weight, 0)) AS total_weight,
+            max(h.as_of_date) AS latest_as_of_date
+        FROM public.etf_holdings AS h
+        JOIN latest_holding_dates AS l
+          ON l.etf_symbol = h.etf_symbol
+         AND l.as_of_date = h.as_of_date
+        JOIN public.etf_categories AS c ON c.symbol = h.etf_symbol
+        GROUP BY
+            h.holding_code,
+            h.holding_symbol,
+            h.holding_name,
+            c.category_group,
+            c.category_label
+        """
+    )
 
 
 def _required_env(name: str) -> str:
