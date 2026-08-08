@@ -11,7 +11,13 @@ from plotly.offline import get_plotlyjs
 
 from quant_trade.backtest import run_backtest
 from quant_trade.data import load_duckdb_bars
-from quant_trade.rsi50 import Bar, Direction, Rsi50SignalEngine, Signal
+from quant_trade.rsi50 import (
+    Bar,
+    Direction,
+    Rsi50SignalEngine,
+    Signal,
+    SignalFeature,
+)
 
 
 def generate_signal_review(
@@ -84,42 +90,38 @@ def _audit_signal(
     first_price = engine.bars[first].low if is_long else engine.bars[first].high
     second_price = engine.bars[second].low if is_long else engine.bars[second].high
     second_atr = engine.atr_values[second]
-    fast = engine.fast_ma_values[current]
-    previous_fast = engine.fast_ma_values[current - 1]
-    slow = engine.slow_ma_values[current]
-    previous_slow = engine.slow_ma_values[current - 1]
     if second_atr is None:
         raise ValueError("signal second pivot has no ATR value")
-    if fast is None or previous_fast is None or slow is None or previous_slow is None:
-        raise ValueError("signal has incomplete moving-average values")
+    calculation = engine.calculate_current_signal(signal.direction)
+    if calculation is None:
+        raise ValueError("signal has no current calculation")
+    inputs = calculation.inputs
+    if inputs.pattern.first_index != first or inputs.pattern.second_index != second:
+        raise ValueError("signal calculation pattern does not match signal")
+    fast_angle = inputs.fast_ma_angle
+    if fast_angle is None:
+        raise ValueError("signal has incomplete MA20 angle values")
+    angle_threshold = engine.config.ma_fast_min_angle_degrees
 
     if is_long:
         retracement = signal.neckline - max(first_price, second_price)
-        break_threshold = signal.neckline + 0.1 * signal.atr
         action = "目标多仓 95%"
         pattern_name = "W 底"
-        rsi_rule = (
-            f"{engine.config.long_trigger_rsi_low:g} ≤ RSI ≤ "
-            f"{engine.config.long_trigger_rsi_high:g}"
-        )
-        rsi_pass = (
-            engine.config.long_trigger_rsi_low
-            <= signal.rsi
-            <= engine.config.long_trigger_rsi_high
-        )
-        trend_pass = fast > previous_fast and slow > previous_slow
-        break_pass = signal.close > break_threshold
     else:
         retracement = min(first_price, second_price) - signal.neckline
-        break_threshold = signal.neckline - 0.1 * signal.atr
         action = "平多至 0%（A 股现货）"
         pattern_name = "M 顶"
-        rsi_rule = "RSI < 45"
-        rsi_pass = signal.rsi < 45.0
-        trend_pass = fast < previous_fast and slow < previous_slow
-        break_pass = signal.close < break_threshold
+    break_threshold = calculation.breakout_threshold
+    rsi_rule = (
+        f"{engine.config.trigger_rsi_low:g} ≤ RSI ≤ {engine.config.trigger_rsi_high:g}"
+    )
+    rsi_pass = calculation.rsi_trigger_pass
+    trend_pass = calculation.fast_trend_pass and calculation.slow_trend_pass
+    break_pass = calculation.breakout_pass
 
-    zone_index = _latest_zone_index(engine, first, current)
+    zone_index = calculation.feature(SignalFeature.RSI_ZONE_ENTRY).observed_index
+    if zone_index is None:
+        raise ValueError("signal has no RSI 45–55 observation")
     pivot_difference_atr = abs(second_price - first_price) / second_atr
     retracement_atr = retracement / second_atr
     distance = second - first
@@ -153,10 +155,12 @@ def _audit_signal(
             "pass": True,
         },
         {
-            "name": "MA20、MA30 同向",
+            "name": "MA20 角度、MA30 方向",
             "value": (
-                f"MA20 {previous_fast:.3f} → {fast:.3f}；"
-                f"MA30 {previous_slow:.3f} → {slow:.3f}"
+                f"MA20 最近 {engine.config.ma_fast_angle_bars} 根 "
+                f"{fast_angle:.2f}°"
+                f"（{'仅判断方向' if angle_threshold is None else f'阈值 {angle_threshold:g}°'}）；"
+                f"MA30 {inputs.previous_slow_ma:.3f} → {inputs.slow_ma:.3f}"
             ),
             "pass": trend_pass,
         },
@@ -194,18 +198,6 @@ def _audit_signal(
         "zone_index": zone_index,
         "checks": checks,
     }
-
-
-def _latest_zone_index(
-    engine: Rsi50SignalEngine,
-    start: int,
-    end: int,
-) -> int:
-    for index in range(end, start - 1, -1):
-        value = engine.rsi_values[index]
-        if value is not None and 45.0 <= value <= 55.0:
-            return index
-    raise ValueError("signal has no RSI 45–55 observation")
 
 
 def _rounded(series: pd.Series[float]) -> list[float]:

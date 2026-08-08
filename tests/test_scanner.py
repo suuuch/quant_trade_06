@@ -44,10 +44,10 @@ def _latest_long_frame() -> pd.DataFrame:
             87.0,
             86.0,
             85.0,
-            86.0,
-            87.0,
-            88.0,
-            90.0,
+            85.5,
+            85.5,
+            100.0,
+            94.0,
         ]
     )
     index = pd.date_range("2025-01-01", periods=len(closes), freq="D")
@@ -92,6 +92,27 @@ def test_scan_symbol_accepts_us_market() -> None:
     assert match.market == "us"
 
 
+def test_us_market_uses_ma20_direction_without_angle_threshold() -> None:
+    frame = _latest_long_frame()
+    open_index = cast(int, frame.columns.get_loc("open"))
+    close_index = cast(int, frame.columns.get_loc("close"))
+    frame.iloc[-4:, [open_index, close_index]] = [
+        [86.0, 86.0],
+        [87.0, 87.0],
+        [88.0, 88.0],
+        [93.0, 93.0],
+    ]
+    frame["high"] = frame["close"] + 0.5
+    frame["low"] = frame["close"] - 0.5
+
+    a_share_match = scan_symbol_frame("000001.SZ", "Test", "Test", frame)
+    us_match = scan_symbol_frame("US.TEST", "Test", "Test", frame, market="us")
+
+    assert a_share_match is None
+    assert us_match is not None
+    assert us_match.engine.config.ma_fast_min_angle_degrees is None
+
+
 def test_scan_symbol_rejects_unknown_market() -> None:
     with pytest.raises(ValueError, match="market must be 'a' or 'us'"):
         scan_symbol_frame(
@@ -107,21 +128,14 @@ def test_us_scan_query_escapes_psycopg_percent_literal() -> None:
     assert "LIKE 'US.%%'" in _US_SHARE_SCAN_QUERY
 
 
-def test_us_scan_query_applies_liquidity_and_size_filters() -> None:
+def test_us_scan_query_applies_price_market_cap_and_turnover_filters() -> None:
     assert "p.market_cap > 1000000000" in _US_SHARE_SCAN_QUERY
     assert "count(close_raw * volume_lots) = 50" in _US_SHARE_SCAN_QUERY
-    assert "max(close_raw) FILTER (WHERE recent_rank = 1) > 15.0" in (
+    assert "max(close_raw) FILTER (WHERE recent_rank = 1) > 5.0" in (
         _US_SHARE_SCAN_QUERY
     )
     assert "avg(close_raw * volume_lots) > 10000000.0" in _US_SHARE_SCAN_QUERY
-
-
-def test_us_scan_query_selects_five_day_industry_leaders_and_laggards() -> None:
-    assert "p.recent_rank = 6" in _US_SHARE_SCAN_QUERY
-    assert "percentile_cont(0.5)" in _US_SHARE_SCAN_QUERY
-    assert "HAVING count(*) >= 5" in _US_SHARE_SCAN_QUERY
-    assert "gain_rank <= 10" in _US_SHARE_SCAN_QUERY
-    assert "loss_rank <= 10" in _US_SHARE_SCAN_QUERY
+    assert "percentile_cont(0.5) WITHIN GROUP" in _US_SHARE_SCAN_QUERY
 
 
 def test_us_database_rows_accept_decimal_adjustment_factors() -> None:
@@ -166,21 +180,7 @@ def test_us_database_rows_treat_invalid_latest_ohlc_as_stale() -> None:
     assert match is None
 
 
-def test_us_database_rows_require_signal_to_match_industry_direction() -> None:
-    frame = _latest_long_frame()
-    rows = _database_rows(frame, sector_direction="short")
-
-    match, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
-
-    assert stale is False
-    assert match is None
-
-
-def _database_rows(
-    frame: pd.DataFrame,
-    *,
-    sector_direction: str = "long",
-) -> list[tuple[object, ...]]:
+def _database_rows(frame: pd.DataFrame) -> list[tuple[object, ...]]:
     return [
         (
             "US.AAPL",
@@ -196,7 +196,6 @@ def _database_rows(
             Decimal("1.0"),
             Decimal("416797788.568"),
             None,
-            sector_direction,
         )
         for timestamp, row in frame.iterrows()
     ]
