@@ -12,7 +12,12 @@ from urllib.request import Request
 
 import pytest
 
-from quant_trade.qq_bot import QQBotClient, QQBotError, send_qq_bot_message
+from quant_trade.qq_bot import (
+    QQBotClient,
+    QQBotError,
+    send_qq_bot_message,
+    send_qq_group_message,
+)
 
 
 def _response(payload: dict[str, Any]) -> MagicMock:
@@ -53,6 +58,28 @@ def test_send_group_message(mock_urlopen: MagicMock) -> None:
         "msg_type": 0,
         "msg_id": "source-message-id",
     }
+
+
+@patch("quant_trade.qq_bot.urlopen")
+def test_send_default_group_message(
+    mock_urlopen: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QQBOT_APPID", "app-id")
+    monkeypatch.setenv("QQBOT_SECRET", "app-secret")
+    monkeypatch.setenv("QQBOT_GROUP_OPENID", "configured-group")
+    mock_urlopen.side_effect = [
+        _response({"access_token": "token"}),
+        _response({"id": "message-id"}),
+    ]
+
+    result = send_qq_group_message("默认群消息")
+
+    assert result["id"] == "message-id"
+    message_request = mock_urlopen.call_args_list[1].args[0]
+    assert message_request.full_url.endswith(
+        "/v2/groups/configured-group/messages"
+    )
 
 
 @patch("quant_trade.qq_bot.urlopen")

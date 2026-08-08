@@ -2,7 +2,12 @@
 
 from quant_trade.backtest import BacktestResult, run_backtest
 from quant_trade.data import load_duckdb_bars
-from quant_trade.qq_bot import QQBotClient, QQBotError, send_qq_bot_message
+from quant_trade.qq_bot import (
+    QQBotClient,
+    QQBotError,
+    send_qq_bot_message,
+    send_qq_group_message,
+)
 from quant_trade.rsi50 import (
     Bar,
     Direction,
@@ -25,4 +30,5 @@ __all__ = [
     "load_duckdb_bars",
     "run_backtest",
     "send_qq_bot_message",
+    "send_qq_group_message",
 ]

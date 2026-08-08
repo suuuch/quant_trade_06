@@ -11,6 +11,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from dotenv import load_dotenv
+
 QQTargetType = Literal["group", "c2c", "channel"]
 
 _TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
@@ -160,6 +162,26 @@ def send_qq_bot_message(
         target_id,
         content,
         msg_id=msg_id,
+    )
+
+
+def send_qq_group_message(
+    content: str,
+    *,
+    msg_id: str | None = None,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    """Send text to the group configured by ``QQBOT_GROUP_OPENID``."""
+    load_dotenv()
+    group_openid = os.getenv("QQBOT_GROUP_OPENID")
+    if not group_openid:
+        raise ValueError("QQBOT_GROUP_OPENID is required")
+    return send_qq_bot_message(
+        "group",
+        group_openid,
+        content,
+        msg_id=msg_id,
+        timeout=timeout,
     )
 
 
