@@ -16,6 +16,7 @@ from quant_trade.qq_service import (
     save_prepared_delivery,
     seconds_until_check,
 )
+from quant_trade.rsi50 import Direction
 from quant_trade.scanner import MarketDataStatus
 
 
@@ -44,8 +45,8 @@ def test_seconds_until_check_uses_today_then_next_day() -> None:
 def test_filter_conditions_include_current_a_share_rules() -> None:
     text = format_filter_conditions()
 
-    assert "MA20 最近 15 Bar 拟合角度 > 40°" in text
-    assert "MA20 最近 15 Bar 拟合角度 < -40°" in text
+    assert "MA20 最近 15 Bar 拟合角度 > 20°" in text
+    assert "MA20 最近 15 Bar 拟合角度 < -20°" in text
     assert "最新一天 RSI(14) 位于 40–60" in text
     assert "多头：最近 5 天 RSI 全部位于 50–58" in text
     assert "空头：最近 5 天 RSI 全部位于 42–50" in text
@@ -97,4 +98,23 @@ def test_prepared_delivery_manifest_survives_restart(tmp_path: Path) -> None:
         scan_date=date(2026, 8, 7),
         summary="历史扫描",
         images=(DeliveryImage(image.resolve(), ("000001.SZ",)),),
+    )
+
+
+def test_prepared_delivery_manifest_preserves_image_direction(tmp_path: Path) -> None:
+    image = tmp_path / "batch.png"
+    image.write_bytes(b"png")
+    delivery = PreparedDelivery(
+        scan_date=date(2026, 8, 7),
+        summary="历史扫描",
+        images=(DeliveryImage(image, ("000001.SZ",), Direction.LONG),),
+    )
+    manifest = tmp_path / "latest_delivery.json"
+
+    save_prepared_delivery(delivery, manifest)
+
+    assert load_prepared_delivery(manifest) == PreparedDelivery(
+        scan_date=date(2026, 8, 7),
+        summary="历史扫描",
+        images=(DeliveryImage(image.resolve(), ("000001.SZ",), Direction.LONG),),
     )

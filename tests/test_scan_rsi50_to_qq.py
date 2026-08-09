@@ -49,8 +49,8 @@ def test_default_group_target_comes_from_environment(
 def test_a_share_summary_lists_active_filter_conditions() -> None:
     text = _filter_conditions("a", "both")
 
-    assert "MA20 最近 15 Bar 拟合角度 > 40°" in text
-    assert "MA20 最近 15 Bar 拟合角度 < -40°" in text
+    assert "MA20 最近 15 Bar 拟合角度 > 20°" in text
+    assert "MA20 最近 15 Bar 拟合角度 < -20°" in text
     assert "最新一天 RSI(14) 位于 40–60" in text
     assert "多头：最近 5 天 RSI 全部位于 50–58" in text
     assert "空头：最近 5 天 RSI 全部位于 42–50" in text

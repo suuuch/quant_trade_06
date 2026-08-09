@@ -112,6 +112,8 @@ def test_us_market_uses_ma20_direction_without_angle_threshold() -> None:
         101.01,
         104.46,
     ]
+    base = 91.64
+    closes = [base + (close - base) * 0.6 for close in closes]
     index = pd.date_range("2025-01-01", periods=len(closes), freq="D")
     close = pd.Series(closes, index=index)
     frame = pd.DataFrame(
@@ -154,8 +156,9 @@ def test_us_scan_query_applies_price_market_cap_and_turnover_filters() -> None:
     assert "max(close_raw) FILTER (WHERE recent_rank = 1) > 5.0" in (
         _US_SHARE_SCAN_QUERY
     )
-    assert "avg(close_raw * volume_lots) > 10000000.0" in _US_SHARE_SCAN_QUERY
+    assert "avg(close_raw * volume_lots) > 50000000.0" in _US_SHARE_SCAN_QUERY
     assert "percentile_cont(0.5) WITHIN GROUP" in _US_SHARE_SCAN_QUERY
+    assert ") > 50000000.0" in _US_SHARE_SCAN_QUERY
 
 
 def test_us_database_rows_accept_decimal_adjustment_factors() -> None:
