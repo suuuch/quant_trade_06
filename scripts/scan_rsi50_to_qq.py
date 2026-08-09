@@ -112,18 +112,8 @@ def main() -> None:
         )
         for match in delivery_matches
     ]
-    delivery_groups = _chunk_rendered(rendered, args.charts_per_message)
     delivery_images = (
-        [
-            (
-                group,
-                render_signal_sheet(
-                    [image_path for _, image_path in group],
-                    output_dir / "batches" / f"batch_{index:03d}.png",
-                ),
-            )
-            for index, group in enumerate(delivery_groups, start=1)
-        ]
+        _direction_delivery_images(rendered, output_dir, args.charts_per_message)
         if args.send
         else []
     )
@@ -165,7 +155,7 @@ def main() -> None:
     )
     failures: list[str] = []
     total_groups = len(delivery_images)
-    for index, (group, image_path) in enumerate(delivery_images, start=1):
+    for index, (direction, group, image_path) in enumerate(delivery_images, start=1):
         if args.delay:
             time.sleep(args.delay)
         symbols = [match.symbol for match, _ in group]
@@ -174,7 +164,10 @@ def main() -> None:
                 target_type,
                 target_id,
                 image_path,
-                content=(f"RSI 顺势交易信号 {index}/{total_groups}\n{'、'.join(symbols)}"),
+                content=(
+                    f"{_direction_label(direction)}信号 {index}/{total_groups}\n"
+                    f"{'、'.join(symbols)}"
+                ),
                 msg_id=args.msg_id,
                 msg_seq=index + 1 if args.msg_id else None,
             )
@@ -193,6 +186,40 @@ def _chunk_rendered(
 ) -> list[list[tuple[SignalMatch, Path]]]:
     """Split rendered charts into ordered QQ delivery groups."""
     return [rendered[start : start + size] for start in range(0, len(rendered), size)]
+
+
+def _direction_delivery_images(
+    rendered: list[tuple[SignalMatch, Path]],
+    output_dir: Path,
+    charts_per_message: int,
+) -> list[tuple[Direction, list[tuple[SignalMatch, Path]], Path]]:
+    """Render long batches followed by short batches for QQ delivery."""
+    images: list[tuple[Direction, list[tuple[SignalMatch, Path]], Path]] = []
+    for direction in (Direction.LONG, Direction.SHORT):
+        direction_rendered = [
+            item for item in rendered if item[0].signal.direction is direction
+        ]
+        groups = _chunk_rendered(direction_rendered, charts_per_message)
+        images.extend(
+            (
+                direction,
+                group,
+                render_signal_sheet(
+                    [image_path for _, image_path in group],
+                    output_dir
+                    / "batches"
+                    / direction.value
+                    / f"batch_{index:03d}.png",
+                ),
+            )
+            for index, group in enumerate(groups, start=1)
+        )
+    return images
+
+
+def _direction_label(direction: Direction) -> str:
+    """Return a QQ message prefix for a trade direction."""
+    return "RSI 顺势交易多头" if direction is Direction.LONG else "RSI 顺势交易空头"
 
 
 def _signal_text(match: SignalMatch) -> str:

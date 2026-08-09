@@ -613,10 +613,10 @@ _US_SHARE_SCAN_QUERY = """
         GROUP BY symbol
         HAVING count(close_raw * volume_lots) = 50
            AND max(close_raw) FILTER (WHERE recent_rank = 1) > 5.0
-           AND avg(close_raw * volume_lots) > 10000000.0
+           AND avg(close_raw * volume_lots) > 50000000.0
            AND percentile_cont(0.5) WITHIN GROUP (
                ORDER BY close_raw * volume_lots
-           ) > 10000000.0
+           ) > 50000000.0
     )
     SELECT
         p.symbol,

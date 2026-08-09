@@ -23,6 +23,7 @@ from quant_trade.scanner import (
     DatabaseSettings,
     Market,
     MarketDataStatus,
+    SignalMatch,
     read_market_data_status,
     render_signal_chart,
     render_signal_sheet,
@@ -43,6 +44,7 @@ class DeliveryImage:
 
     path: Path
     symbols: tuple[str, ...]
+    direction: Direction | None = None
 
 
 @dataclass(frozen=True)
@@ -70,12 +72,15 @@ def save_prepared_delivery(delivery: PreparedDelivery, manifest: Path) -> None:
         "scan_date": delivery.scan_date.isoformat(),
         "summary": delivery.summary,
         "images": [
-            {
-                "path": str(image.path.resolve()),
-                "symbols": list(image.symbols),
-            }
-            for image in delivery.images
-        ],
+                {
+                    "path": str(image.path.resolve()),
+                    "symbols": list(image.symbols),
+                    "direction": (
+                        None if image.direction is None else image.direction.value
+                    ),
+                }
+                for image in delivery.images
+            ],
     }
     temporary = manifest.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -92,6 +97,11 @@ def load_prepared_delivery(manifest: Path) -> PreparedDelivery | None:
             DeliveryImage(
                 path=Path(item["path"]),
                 symbols=tuple(str(symbol) for symbol in item["symbols"]),
+                direction=(
+                    None
+                    if item.get("direction") is None
+                    else Direction(str(item["direction"]))
+                ),
             )
             for item in payload["images"]
         )
@@ -314,20 +324,7 @@ def prepare_delivery(
         )
         for match in batch.matches
     ]
-    groups = [
-        rendered[start : start + charts_per_message]
-        for start in range(0, len(rendered), charts_per_message)
-    ]
-    images = tuple(
-        DeliveryImage(
-            path=render_signal_sheet(
-                [path for _, path in group],
-                output_dir / "batches" / f"batch_{index:03d}.png",
-            ),
-            symbols=tuple(match.symbol for match, _ in group),
-        )
-        for index, group in enumerate(groups, start=1)
-    )
+    images = _rsi_delivery_images(rendered, output_dir, charts_per_message)
     long_count = sum(
         match.signal.direction is Direction.LONG for match in batch.matches
     )
@@ -342,6 +339,38 @@ def prepare_delivery(
     delivery = PreparedDelivery(batch.scan_date, summary, images)
     save_prepared_delivery(delivery, output_root / "latest_delivery.json")
     return delivery
+
+
+def _rsi_delivery_images(
+    rendered: list[tuple[SignalMatch, Path]],
+    output_dir: Path,
+    charts_per_message: int,
+) -> tuple[DeliveryImage, ...]:
+    """Combine RSI charts into long batches followed by short batches."""
+    images: list[DeliveryImage] = []
+    for direction in (Direction.LONG, Direction.SHORT):
+        direction_rendered = [
+            item for item in rendered if item[0].signal.direction is direction
+        ]
+        groups = [
+            direction_rendered[start : start + charts_per_message]
+            for start in range(0, len(direction_rendered), charts_per_message)
+        ]
+        images.extend(
+            DeliveryImage(
+                path=render_signal_sheet(
+                    [path for _, path in group],
+                    output_dir
+                    / "batches"
+                    / direction.value
+                    / f"batch_{index:03d}.png",
+                ),
+                symbols=tuple(match.symbol for match, _ in group),
+                direction=direction,
+            )
+            for index, group in enumerate(groups, start=1)
+        )
+    return tuple(images)
 
 
 class QQSignalService(botpy.Client):
@@ -466,6 +495,13 @@ class QQSignalService(botpy.Client):
                     "历史扫描正在准备，请稍后再试。",
                 )
                 return
+            await asyncio.to_thread(
+                self._reply_status,
+                target_type,
+                target_id,
+                msg_id,
+                "未找到历史缓存，开始按数据库最后交易日扫描，完成后发送。",
+            )
             asyncio.create_task(
                 self._prepare_history_and_deliver(
                     target_type,
@@ -558,6 +594,13 @@ class QQSignalService(botpy.Client):
                 )
             except (QQBotError, OSError, TypeError, ValueError) as error:
                 print(f"历史扫描或发送失败：{error}", flush=True)
+                await asyncio.to_thread(
+                    self._reply_status,
+                    target_type,
+                    target_id,
+                    msg_id,
+                    f"历史扫描或发送失败：{error}",
+                )
 
     async def _prepare_wm_and_deliver(
         self,
@@ -612,6 +655,7 @@ class QQSignalService(botpy.Client):
                 target_id,
                 msg_id,
                 deliveries[command.pattern],
+                2,
             )
         except (QQBotError, OSError, TypeError, ValueError) as error:
             print(f"W/M 扫描或发送失败：{error}", flush=True)
@@ -716,6 +760,7 @@ class QQSignalService(botpy.Client):
                     target_id,
                     msg_id,
                     prepared,
+                    2,
                 )
             except (QQBotError, OSError, TypeError, ValueError) as error:
                 print(f"QQ 批量发送失败：{error}", flush=True)
@@ -726,6 +771,7 @@ class QQSignalService(botpy.Client):
         target_id: str,
         msg_id: str,
         prepared: PreparedDelivery,
+        first_msg_seq: int = 1,
     ) -> None:
         print(
             f"开始发送 {prepared.scan_date} 扫描结果："
@@ -738,20 +784,24 @@ class QQSignalService(botpy.Client):
             target_id,
             prepared.summary,
             msg_id=msg_id,
-            msg_seq=1,
+            msg_seq=first_msg_seq,
         )
         print("QQ 筛选条件和扫描汇总已发送。", flush=True)
         total = len(prepared.images)
         for index, image in enumerate(prepared.images, start=1):
             if self.send_delay:
                 time.sleep(self.send_delay)
+            direction_label = _delivery_direction_label(image.direction)
             client.send_image(
                 target_type,
                 target_id,
                 image.path,
-                content=(f"RSI 顺势交易信号 {index}/{total}\n{'、'.join(image.symbols)}"),
+                content=(
+                    f"{direction_label}信号 {index}/{total}\n"
+                    f"{'、'.join(image.symbols)}"
+                ),
                 msg_id=msg_id,
-                msg_seq=index + 1,
+                msg_seq=first_msg_seq + index,
             )
             print(
                 f"QQ 已发送 {index}/{total}: {'、'.join(image.symbols)}",
@@ -773,6 +823,15 @@ class QQSignalService(botpy.Client):
             msg_id=msg_id,
             msg_seq=1,
         )
+
+
+def _delivery_direction_label(direction: Direction | None) -> str:
+    """Return a QQ message prefix for one delivery image direction."""
+    if direction is Direction.LONG:
+        return "RSI 顺势交易多头"
+    if direction is Direction.SHORT:
+        return "RSI 顺势交易空头"
+    return "RSI 顺势交易"
 
 
 def required_qq_credentials() -> tuple[str, str]:
