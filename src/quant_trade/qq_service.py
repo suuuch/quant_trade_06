@@ -116,6 +116,11 @@ def load_prepared_delivery(manifest: Path) -> PreparedDelivery | None:
         return None
 
 
+def delivery_images_exist(delivery: PreparedDelivery) -> bool:
+    """Return whether every image referenced by a delivery still exists."""
+    return all(image.path.exists() for image in delivery.images)
+
+
 def market_data_ready(status: MarketDataStatus) -> bool:
     """Return whether a trading day has all required A-share daily data."""
     return bool(
@@ -476,6 +481,13 @@ class QQSignalService(botpy.Client):
         cache_date = self.prepared.scan_date if self.prepared is not None else "无"
         print(f"收到命令：{command}；当前缓存日期：{cache_date}。", flush=True)
         prepared = self.prepared
+        if prepared is not None and not delivery_images_exist(prepared):
+            print(
+                f"{prepared.scan_date} 历史缓存图片缺失，清空缓存并重新准备。",
+                flush=True,
+            )
+            self.prepared = None
+            prepared = None
         if self.preparing and not (send_history and prepared is not None):
             await asyncio.to_thread(
                 self._reply_status,
