@@ -12,6 +12,7 @@ from quant_trade.qq_service import (
     format_filter_conditions,
     load_prepared_delivery,
     market_data_ready,
+    parse_wm_command,
     save_prepared_delivery,
     seconds_until_check,
 )
@@ -46,6 +47,35 @@ def test_filter_conditions_include_current_a_share_rules() -> None:
     assert "MA20 最近 15 Bar 拟合角度 > 40°" in text
     assert "MA20 最近 15 Bar 拟合角度 < -40°" in text
     assert "RSI(14) 曾进入 45–55" in text
+
+
+@pytest.mark.parametrize(
+    ("content", "market", "pattern", "history"),
+    [
+        ("发送A股W底", "a", "w", False),
+        ("发送美股M顶", "us", "m", False),
+        ("发送A股WM", "a", "wm", False),
+        ("发送形态", "a", "wm", False),
+        ("发送历史A股W底", "a", "w", True),
+        ("发送美股M顶历史", "us", "m", True),
+    ],
+)
+def test_wm_commands_select_market_and_pattern(
+    content: str,
+    market: str,
+    pattern: str,
+    history: bool,
+) -> None:
+    command = parse_wm_command(content)
+
+    assert command is not None
+    assert command.market == market
+    assert command.pattern == pattern
+    assert command.history is history
+
+
+def test_non_wm_send_command_is_left_for_rsi_handler() -> None:
+    assert parse_wm_command("发送历史") is None
 
 
 def test_prepared_delivery_manifest_survives_restart(tmp_path: Path) -> None:

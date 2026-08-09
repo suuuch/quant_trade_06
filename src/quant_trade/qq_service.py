@@ -10,21 +10,28 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 import botpy
 import psycopg
-from botpy.message import GroupMessage
+from botpy.message import C2CMessage, GroupMessage
 
-from quant_trade.qq_bot import QQBotClient, QQBotError
+from quant_trade.qq_bot import QQBotClient, QQBotError, QQTargetType
 from quant_trade.rsi50 import Direction, Rsi50Config
 from quant_trade.scanner import (
     DatabaseSettings,
+    Market,
     MarketDataStatus,
     read_market_data_status,
     render_signal_chart,
     render_signal_sheet,
     scan_database_latest,
+)
+from quant_trade.wm_scanner import (
+    WmSignalMatch,
+    render_wm_signal_chart,
+    scan_wm_database_latest,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -45,6 +52,15 @@ class PreparedDelivery:
     scan_date: date
     summary: str
     images: tuple[DeliveryImage, ...]
+
+
+@dataclass(frozen=True)
+class WmCommand:
+    """A parsed W/M delivery command."""
+
+    market: Market
+    pattern: Literal["w", "m", "wm"]
+    history: bool = False
 
 
 def save_prepared_delivery(delivery: PreparedDelivery, manifest: Path) -> None:
@@ -135,6 +151,128 @@ def format_filter_conditions(direction: str = "both") -> str:
     return "\n".join(lines)
 
 
+def parse_wm_command(content: str) -> WmCommand | None:
+    """Parse a W/M command with an optional A-share or US-share keyword."""
+    compact = "".join(content.upper().split())
+    if "发送" not in compact:
+        return None
+    pattern: Literal["w", "m", "wm"]
+    if "W底" in compact and "M顶" in compact:
+        pattern = "wm"
+    elif "WM" in compact or "形态" in compact:
+        pattern = "wm"
+    elif "W底" in compact:
+        pattern = "w"
+    elif "M顶" in compact:
+        pattern = "m"
+    else:
+        return None
+    market: Market = "us" if "美股" in compact else "a"
+    return WmCommand(market, pattern, history="历史" in compact)
+
+
+def format_wm_conditions(pattern: Literal["w", "m", "wm"]) -> str:
+    """Describe the independent W/M entry conditions."""
+    pattern_label = {"w": "W 底", "m": "M 顶", "wm": "W 底及 M 顶"}[pattern]
+    return (
+        f"筛选条件（日线，{pattern_label}）：\n"
+        "摆动点采用 3/3；两个同类摆动点间距 5–30 Bar；"
+        "两端价差 ≤ 1 ATR；中间反弹/回撤 ≥ 1 ATR；"
+        "W 底要求收盘 > 颈线 + 0.1 ATR，"
+        "M 顶要求收盘 < 颈线 - 0.1 ATR。\n"
+        "该策略独立运行，不叠加 RSI50 或均线条件。"
+    )
+
+
+def prepare_wm_deliveries(
+    settings: DatabaseSettings,
+    output_root: Path,
+    *,
+    market: Market,
+    lookback_bars: int,
+    charts_per_message: int,
+    enforce_freshness: bool = True,
+) -> dict[str, PreparedDelivery]:
+    """Scan and cache W-bottom, M-top, and combined delivery batches."""
+    if market not in {"a", "us"}:
+        raise ValueError("market must be 'a' or 'us'")
+    batch = scan_wm_database_latest(
+        settings,
+        market=market,
+        lookback_bars=lookback_bars,
+        enforce_freshness=enforce_freshness,
+    )
+    market_label = "A股" if market == "a" else "美股"
+    output_dir = output_root / f"wm_{market}" / batch.scan_date.isoformat()
+    rendered = [
+        (
+            match,
+            render_wm_signal_chart(
+                match,
+                output_dir
+                / (
+                    f"{match.symbol.replace('.', '_')}_"
+                    f"{match.signal.direction.value}.png"
+                ),
+            ),
+        )
+        for match in batch.matches
+    ]
+    selections: dict[
+        Literal["w", "m", "wm"],
+        list[tuple[WmSignalMatch, Path]],
+    ] = {
+        "w": [item for item in rendered if item[0].signal.direction is Direction.LONG],
+        "m": [item for item in rendered if item[0].signal.direction is Direction.SHORT],
+        "wm": rendered,
+    }
+    deliveries: dict[str, PreparedDelivery] = {}
+    for pattern, selected in selections.items():
+        images = _wm_delivery_images(
+            selected,
+            output_dir / "batches" / pattern,
+            charts_per_message,
+        )
+        summary = (
+            f"{market_label} W/M 日线入场扫描 {batch.scan_date:%Y-%m-%d}\n"
+            f"扫描 {batch.scanned_symbols} 只，停牌/陈旧 {batch.stale_symbols} 只，"
+            f"命中 {len(selected)} 只，图片消息 {len(images)} 条。\n\n"
+            f"{format_wm_conditions(pattern)}"
+        )
+        delivery = PreparedDelivery(batch.scan_date, summary, images)
+        save_prepared_delivery(
+            delivery,
+            output_root / _wm_manifest_name(market, pattern),
+        )
+        deliveries[pattern] = delivery
+    return deliveries
+
+
+def _wm_delivery_images(
+    rendered: list[tuple[WmSignalMatch, Path]],
+    output_dir: Path,
+    charts_per_message: int,
+) -> tuple[DeliveryImage, ...]:
+    groups = [
+        rendered[start : start + charts_per_message]
+        for start in range(0, len(rendered), charts_per_message)
+    ]
+    return tuple(
+        DeliveryImage(
+            path=render_signal_sheet(
+                [path for _, path in group],
+                output_dir / f"batch_{index:03d}.png",
+            ),
+            symbols=tuple(match.symbol for match, _ in group),
+        )
+        for index, group in enumerate(groups, start=1)
+    )
+
+
+def _wm_manifest_name(market: str, pattern: str) -> str:
+    return f"latest_wm_{market}_{pattern}.json"
+
+
 def read_a_share_status(settings: DatabaseSettings, today: date) -> MarketDataStatus:
     """Read today's A-share trading-calendar and table freshness state."""
     with psycopg.connect(
@@ -204,8 +342,8 @@ def prepare_delivery(
     return delivery
 
 
-class AShareQQService(botpy.Client):
-    """Keep QQ online, prepare daily scans, and reply to group send commands."""
+class QQSignalService(botpy.Client):
+    """Prepare strategy caches and handle authorized group/C2C commands."""
 
     def __init__(
         self,
@@ -228,7 +366,20 @@ class AShareQQService(botpy.Client):
         self.charts_per_message = charts_per_message
         self.manifest = output_root / "latest_delivery.json"
         self.prepared = load_prepared_delivery(self.manifest)
+        self.c2c_openid = os.getenv("QQBOT_OPENID")
+        self.wm_prepared = {
+            (market, pattern): delivery
+            for market in ("a", "us")
+            for pattern in ("w", "m", "wm")
+            if (
+                delivery := load_prepared_delivery(
+                    output_root / _wm_manifest_name(market, pattern)
+                )
+            )
+            is not None
+        }
         self.preparing = False
+        self.wm_preparing: set[str] = set()
         self._scheduler_task: asyncio.Task[None] | None = None
         self._delivery_lock = asyncio.Lock()
 
@@ -240,28 +391,65 @@ class AShareQQService(botpy.Client):
                 f"已加载 {self.prepared.scan_date} 历史扫描缓存。",
                 flush=True,
             )
+        for (market, pattern), delivery in sorted(self.wm_prepared.items()):
+            market_label = "A股" if market == "a" else "美股"
+            pattern_label = {"w": "W底", "m": "M顶", "wm": "WM"}[pattern]
+            print(
+                f"已加载 {delivery.scan_date} {market_label}{pattern_label}缓存。",
+                flush=True,
+            )
         if self._scheduler_task is None or self._scheduler_task.done():
             self._scheduler_task = asyncio.create_task(self._scheduler_loop())
 
     async def on_group_at_message_create(self, message: GroupMessage) -> None:
-        """Send the prepared scan when a group mention contains '发送'."""
-        content = message.content or ""
-        send_history = "发送历史" in content
-        if not send_history and "发送" not in content:
-            return
+        """Handle supported commands from an mentioned QQ group."""
         group_openid = message.group_openid
         msg_id = message.id
         if not isinstance(group_openid, str) or not isinstance(msg_id, str):
             print("忽略缺少 group_openid 或 msg_id 的群消息。", flush=True)
             return
+        await self._handle_command("group", group_openid, msg_id, message.content or "")
+
+    async def on_c2c_message_create(self, message: C2CMessage) -> None:
+        """Handle commands from the configured QQBOT_OPENID conversation."""
+        user_openid = message.author.user_openid
+        msg_id = message.id
+        if not isinstance(user_openid, str) or not isinstance(msg_id, str):
+            print("忽略缺少 user_openid 或 msg_id 的单聊消息。", flush=True)
+            return
+        if not self.c2c_openid or user_openid != self.c2c_openid:
+            print(f"忽略未授权 QQ 单聊：{user_openid}。", flush=True)
+            return
+        await self._handle_command("c2c", user_openid, msg_id, message.content or "")
+
+    async def _handle_command(
+        self,
+        target_type: QQTargetType,
+        target_id: str,
+        msg_id: str,
+        content: str,
+    ) -> None:
+        wm_command = parse_wm_command(content)
+        if wm_command is not None:
+            await self._handle_wm_command(
+                target_type,
+                target_id,
+                msg_id,
+                wm_command,
+            )
+            return
+        send_history = "发送历史" in content
+        if not send_history and "发送" not in content:
+            return
         command = "发送历史" if send_history else "发送"
         cache_date = self.prepared.scan_date if self.prepared is not None else "无"
-        print(f"收到群命令：{command}；当前缓存日期：{cache_date}。", flush=True)
+        print(f"收到命令：{command}；当前缓存日期：{cache_date}。", flush=True)
         prepared = self.prepared
         if self.preparing and not (send_history and prepared is not None):
             await asyncio.to_thread(
                 self._reply_status,
-                group_openid,
+                target_type,
+                target_id,
                 msg_id,
                 "今日数据已齐，扫描和绘图正在进行，请稍后再次发送。",
             )
@@ -270,17 +458,25 @@ class AShareQQService(botpy.Client):
             if self._delivery_lock.locked():
                 await asyncio.to_thread(
                     self._reply_status,
-                    group_openid,
+                    target_type,
+                    target_id,
                     msg_id,
                     "历史扫描正在准备，请稍后再试。",
                 )
                 return
-            asyncio.create_task(self._prepare_history_and_deliver(group_openid, msg_id))
+            asyncio.create_task(
+                self._prepare_history_and_deliver(
+                    target_type,
+                    target_id,
+                    msg_id,
+                )
+            )
             return
         if prepared is None:
             await asyncio.to_thread(
                 self._reply_status,
-                group_openid,
+                target_type,
+                target_id,
                 msg_id,
                 "今日扫描尚未完成；交易日 18:00 后将在数据到齐时自动扫描。",
             )
@@ -288,16 +484,55 @@ class AShareQQService(botpy.Client):
         if self._delivery_lock.locked():
             await asyncio.to_thread(
                 self._reply_status,
-                group_openid,
+                target_type,
+                target_id,
                 msg_id,
                 "已有一批信号正在发送，请稍后再试。",
             )
             return
-        asyncio.create_task(self._deliver(group_openid, msg_id, prepared))
+        asyncio.create_task(self._deliver(target_type, target_id, msg_id, prepared))
+
+    async def _handle_wm_command(
+        self,
+        target_type: QQTargetType,
+        target_id: str,
+        msg_id: str,
+        command: WmCommand,
+    ) -> None:
+        key = (command.market, command.pattern)
+        prepared = self.wm_prepared.get(key)
+        market_label = "A股" if command.market == "a" else "美股"
+        pattern_label = {"w": "W底", "m": "M顶", "wm": "WM"}[command.pattern]
+        history_label = "历史" if command.history else ""
+        print(
+            f"收到命令：发送{history_label}{market_label}{pattern_label}。",
+            flush=True,
+        )
+        if prepared is not None:
+            asyncio.create_task(self._deliver(target_type, target_id, msg_id, prepared))
+            return
+        if command.market in self.wm_preparing:
+            await asyncio.to_thread(
+                self._reply_status,
+                target_type,
+                target_id,
+                msg_id,
+                f"{market_label} W/M 正在扫描和绘图，请稍后再次发送。",
+            )
+            return
+        asyncio.create_task(
+            self._prepare_wm_and_deliver(
+                target_type,
+                target_id,
+                msg_id,
+                command,
+            )
+        )
 
     async def _prepare_history_and_deliver(
         self,
-        group_openid: str,
+        target_type: QQTargetType,
+        target_id: str,
         msg_id: str,
     ) -> None:
         async with self._delivery_lock:
@@ -314,12 +549,72 @@ class AShareQQService(botpy.Client):
                 self.prepared = prepared
                 await asyncio.to_thread(
                     self._deliver_sync,
-                    group_openid,
+                    target_type,
+                    target_id,
                     msg_id,
                     prepared,
                 )
             except (QQBotError, OSError, TypeError, ValueError) as error:
                 print(f"历史扫描或发送失败：{error}", flush=True)
+
+    async def _prepare_wm_and_deliver(
+        self,
+        target_type: QQTargetType,
+        target_id: str,
+        msg_id: str,
+        command: WmCommand,
+    ) -> None:
+        async with self._delivery_lock:
+            await self._prepare_wm_and_deliver_locked(
+                target_type,
+                target_id,
+                msg_id,
+                command,
+            )
+
+    async def _prepare_wm_and_deliver_locked(
+        self,
+        target_type: QQTargetType,
+        target_id: str,
+        msg_id: str,
+        command: WmCommand,
+    ) -> None:
+        market = command.market
+        self.wm_preparing.add(market)
+        try:
+            await asyncio.to_thread(
+                self._reply_status,
+                target_type,
+                target_id,
+                msg_id,
+                f"{'A股' if market == 'a' else '美股'} W/M 开始扫描，完成后发送。",
+            )
+            deliveries = await asyncio.to_thread(
+                prepare_wm_deliveries,
+                self.settings,
+                self.output_root,
+                market=market,
+                lookback_bars=self.lookback_bars,
+                charts_per_message=self.charts_per_message,
+                enforce_freshness=market == "a" and not command.history,
+            )
+            self.wm_prepared.update(
+                {
+                    (market, pattern): delivery
+                    for pattern, delivery in deliveries.items()
+                }
+            )
+            await asyncio.to_thread(
+                self._deliver_sync,
+                target_type,
+                target_id,
+                msg_id,
+                deliveries[command.pattern],
+            )
+        except (QQBotError, OSError, TypeError, ValueError) as error:
+            print(f"W/M 扫描或发送失败：{error}", flush=True)
+        finally:
+            self.wm_preparing.discard(market)
 
     async def _scheduler_loop(self) -> None:
         while True:
@@ -327,7 +622,15 @@ class AShareQQService(botpy.Client):
             if now.time() < self.check_time:
                 await asyncio.sleep(seconds_until_check(now, self.check_time))
                 continue
-            if self.prepared is not None and self.prepared.scan_date == now.date():
+            rsi_current = (
+                self.prepared is not None and self.prepared.scan_date == now.date()
+            )
+            wm_current = all(
+                (delivery := self.wm_prepared.get(("a", pattern))) is not None
+                and delivery.scan_date == now.date()
+                for pattern in ("w", "m", "wm")
+            )
+            if rsi_current and wm_current:
                 await asyncio.sleep(seconds_until_check(now, self.check_time))
                 continue
             try:
@@ -350,18 +653,46 @@ class AShareQQService(botpy.Client):
                     await asyncio.sleep(self.poll_seconds)
                     continue
                 self.preparing = True
-                print(f"{now:%Y-%m-%d %H:%M:%S} 数据已齐，开始扫描。", flush=True)
-                self.prepared = await asyncio.to_thread(
-                    prepare_delivery,
-                    self.settings,
-                    self.output_root,
-                    lookback_bars=self.lookback_bars,
-                    charts_per_message=self.charts_per_message,
-                )
-                print(
-                    f"{self.prepared.scan_date} 扫描完成，等待群内发送指令。",
-                    flush=True,
-                )
+                if not rsi_current:
+                    print(
+                        f"{now:%Y-%m-%d %H:%M:%S} 数据已齐，开始 RSI50 扫描。",
+                        flush=True,
+                    )
+                    self.prepared = await asyncio.to_thread(
+                        prepare_delivery,
+                        self.settings,
+                        self.output_root,
+                        lookback_bars=self.lookback_bars,
+                        charts_per_message=self.charts_per_message,
+                    )
+                    print(
+                        f"{self.prepared.scan_date} RSI50 扫描完成。",
+                        flush=True,
+                    )
+                if not wm_current:
+                    print(
+                        f"{now:%Y-%m-%d %H:%M:%S} 开始 A股 W/M 扫描。",
+                        flush=True,
+                    )
+                    wm_deliveries = await asyncio.to_thread(
+                        prepare_wm_deliveries,
+                        self.settings,
+                        self.output_root,
+                        market="a",
+                        lookback_bars=self.lookback_bars,
+                        charts_per_message=self.charts_per_message,
+                    )
+                    self.wm_prepared.update(
+                        {
+                            ("a", pattern): delivery
+                            for pattern, delivery in wm_deliveries.items()
+                        }
+                    )
+                    print(
+                        f"{now:%Y-%m-%d} A股 W/M 扫描完成。",
+                        flush=True,
+                    )
+                print("全部扫描完成，等待发送指令。", flush=True)
             except Exception as error:
                 print(f"定时扫描失败，将重试：{error}", flush=True)
                 await asyncio.sleep(self.poll_seconds)
@@ -370,7 +701,8 @@ class AShareQQService(botpy.Client):
 
     async def _deliver(
         self,
-        group_openid: str,
+        target_type: QQTargetType,
+        target_id: str,
         msg_id: str,
         prepared: PreparedDelivery,
     ) -> None:
@@ -378,7 +710,8 @@ class AShareQQService(botpy.Client):
             try:
                 await asyncio.to_thread(
                     self._deliver_sync,
-                    group_openid,
+                    target_type,
+                    target_id,
                     msg_id,
                     prepared,
                 )
@@ -387,7 +720,8 @@ class AShareQQService(botpy.Client):
 
     def _deliver_sync(
         self,
-        group_openid: str,
+        target_type: QQTargetType,
+        target_id: str,
         msg_id: str,
         prepared: PreparedDelivery,
     ) -> None:
@@ -398,8 +732,8 @@ class AShareQQService(botpy.Client):
         )
         client = QQBotClient()
         client.send_text(
-            "group",
-            group_openid,
+            target_type,
+            target_id,
             prepared.summary,
             msg_id=msg_id,
             msg_seq=1,
@@ -410,8 +744,8 @@ class AShareQQService(botpy.Client):
             if self.send_delay:
                 time.sleep(self.send_delay)
             client.send_image(
-                "group",
-                group_openid,
+                target_type,
+                target_id,
                 image.path,
                 content=(f"RSI50 信号 {index}/{total}\n{'、'.join(image.symbols)}"),
                 msg_id=msg_id,
@@ -424,10 +758,15 @@ class AShareQQService(botpy.Client):
         print(f"{prepared.scan_date} QQ 批量发送完成。", flush=True)
 
     @staticmethod
-    def _reply_status(group_openid: str, msg_id: str, content: str) -> None:
+    def _reply_status(
+        target_type: QQTargetType,
+        target_id: str,
+        msg_id: str,
+        content: str,
+    ) -> None:
         QQBotClient().send_text(
-            "group",
-            group_openid,
+            target_type,
+            target_id,
             content,
             msg_id=msg_id,
             msg_seq=1,

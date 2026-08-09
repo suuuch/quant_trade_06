@@ -96,6 +96,18 @@ class ScanBatch:
     matches: list[SignalMatch]
 
 
+@dataclass(frozen=True)
+class SymbolBars:
+    """Normalized bars and metadata for one database symbol."""
+
+    symbol: str
+    name: str
+    industry: str
+    frame: pd.DataFrame
+    market_cap_cny: float | None
+    circulating_market_cap_cny: float | None
+
+
 def select_matches_for_delivery(
     matches: list[SignalMatch],
     max_send: int,
@@ -410,6 +422,27 @@ def _evaluate_rows(
     scan_date: date,
     market: Market,
 ) -> tuple[SignalMatch | None, bool]:
+    symbol_bars, stale = prepare_symbol_bars(rows, scan_date, market)
+    if symbol_bars is None:
+        return None, stale
+    match = scan_symbol_frame(
+        symbol_bars.symbol,
+        symbol_bars.name,
+        symbol_bars.industry,
+        symbol_bars.frame,
+        market_cap_cny=symbol_bars.market_cap_cny,
+        circulating_market_cap_cny=symbol_bars.circulating_market_cap_cny,
+        market=market,
+    )
+    return match, False
+
+
+def prepare_symbol_bars(
+    rows: list[tuple[Any, ...]],
+    scan_date: date,
+    market: Market,
+) -> tuple[SymbolBars | None, bool]:
+    """Normalize one symbol's database rows for any signal strategy."""
     frame = pd.DataFrame(rows, columns=_SCAN_COLUMNS)
     frame["trade_date"] = pd.to_datetime(frame["trade_date"], format="%Y%m%d")
     stale = frame["trade_date"].iloc[-1].date() != scan_date
@@ -447,16 +480,17 @@ def _evaluate_rows(
     market_cap_cny = None if pd.isna(total_mv) else float(total_mv) * 10_000.0
     circulating_market_cap_cny = None if pd.isna(circ_mv) else float(circ_mv) * 10_000.0
     bars = frame.set_index("trade_date")[["open", "high", "low", "close", "volume"]]
-    match = scan_symbol_frame(
-        symbol,
-        name,
-        industry,
-        bars,
-        market_cap_cny=market_cap_cny,
-        circulating_market_cap_cny=circulating_market_cap_cny,
-        market=market,
+    return (
+        SymbolBars(
+            symbol=symbol,
+            name=name,
+            industry=industry,
+            frame=bars,
+            market_cap_cny=market_cap_cny,
+            circulating_market_cap_cny=circulating_market_cap_cny,
+        ),
+        False,
     )
-    return match, False
 
 
 def _required_env(name: str) -> str:

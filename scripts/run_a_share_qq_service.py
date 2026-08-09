@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from quant_trade.qq_service import AShareQQService, required_qq_credentials
+from quant_trade.qq_service import QQSignalService, required_qq_credentials
 from quant_trade.scanner import DatabaseSettings
 
 
@@ -41,7 +41,7 @@ def main() -> None:
         raise ValueError("charts_per_message must be positive")
     load_dotenv()
     app_id, secret = required_qq_credentials()
-    client = AShareQQService(
+    client = QQSignalService(
         settings=DatabaseSettings.from_env(),
         output_root=args.output_dir,
         check_time=time(args.check_hour),
