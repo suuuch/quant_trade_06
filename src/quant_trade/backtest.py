@@ -1,4 +1,4 @@
-"""Backtrader backtest runner for the RSI 50 daily strategy."""
+"""Backtrader backtest runner for the daily RSI trend-following strategy."""
 
 # pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false
 # pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false

@@ -1,4 +1,4 @@
-"""Generate the interactive RSI 50 signal-review report."""
+"""Generate the interactive RSI trend-following signal-review report."""
 
 from pathlib import Path
 

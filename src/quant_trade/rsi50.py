@@ -1,4 +1,4 @@
-"""Bar-by-bar signal engine for the daily RSI 50 trend strategy."""
+"""Bar-by-bar signal engine for the daily RSI trend-following strategy."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -55,24 +55,28 @@ class Bar:
 
 
 @dataclass(frozen=True)
+class RsiDirectionFilter:
+    """RSI ranges required for one trade direction."""
+
+    trigger_low: float
+    trigger_high: float
+
+
+@dataclass(frozen=True)
 class Rsi50Config:
-    """Parameters fixed by the daily RSI 50 strategy document."""
+    """Parameters fixed by the daily RSI trend-following strategy document."""
 
     rsi_period: int = 14
     ma_fast: int = 20
     ma_slow: int = 30
     atr_period: int = 14
-    rsi_zone_low: float = 45.0
-    rsi_zone_high: float = 55.0
-    long_trigger_rsi_low: float = 45.0
-    long_trigger_rsi_high: float = 55.0
+    rsi_zone_low: float = 40.0
+    rsi_zone_high: float = 60.0
+    long_trigger_rsi_low: float = 50.0
+    long_trigger_rsi_high: float = 58.0
     short_trigger_rsi_low: float = 42.0
     short_trigger_rsi_high: float = 50.0
-    recent_rsi_lookback: int = 5
-    long_recent_rsi_low: float = 50.0
-    long_recent_rsi_high: float = 58.0
-    short_recent_rsi_low: float = 42.0
-    short_recent_rsi_high: float = 50.0
+    recent_rsi_days: int = 5
     ma_fast_angle_bars: int = 15
     ma_fast_min_angle_degrees: float | None = 40.0
 
@@ -97,20 +101,26 @@ class Rsi50Config:
             raise ValueError(
                 "short_trigger_rsi_low must not exceed short_trigger_rsi_high"
             )
-        if self.recent_rsi_lookback < 0:
-            raise ValueError("recent_rsi_lookback must not be negative")
-        if self.long_recent_rsi_low > self.long_recent_rsi_high:
-            raise ValueError("long_recent_rsi_low must not exceed long_recent_rsi_high")
-        if self.short_recent_rsi_low > self.short_recent_rsi_high:
-            raise ValueError(
-                "short_recent_rsi_low must not exceed short_recent_rsi_high"
-            )
+        if self.recent_rsi_days < 5:
+            raise ValueError("recent_rsi_days must be at least 5")
         if self.ma_fast_angle_bars < 2:
             raise ValueError("ma_fast_angle_bars must be at least 2")
         if self.ma_fast_min_angle_degrees is not None and not (
             0.0 < self.ma_fast_min_angle_degrees < 90.0
         ):
             raise ValueError("ma_fast_min_angle_degrees must be in (0, 90)")
+
+    def rsi_filter_for(self, direction: Direction) -> RsiDirectionFilter:
+        """Return the configured RSI filter ranges for one direction."""
+        if direction is Direction.LONG:
+            return RsiDirectionFilter(
+                trigger_low=self.long_trigger_rsi_low,
+                trigger_high=self.long_trigger_rsi_high,
+            )
+        return RsiDirectionFilter(
+            trigger_low=self.short_trigger_rsi_low,
+            trigger_high=self.short_trigger_rsi_high,
+        )
 
 
 @dataclass(frozen=True)
@@ -135,8 +145,6 @@ class SignalCalculationInput:
     atr: float
     fast_ma: float
     previous_fast_ma: float
-    slow_ma: float
-    previous_slow_ma: float
     fast_ma_angle: float | None
     rsi_history: tuple[float | None, ...]
 
@@ -144,11 +152,9 @@ class SignalCalculationInput:
 class SignalFeature(StrEnum):
     """Features evaluated for every directional signal candidate."""
 
-    RSI_ZONE_ENTRY = "rsi_zone_entry"
-    RSI_RECENT_RANGE = "rsi_recent_range"
+    RSI_LATEST_RANGE = "rsi_latest_range"
     FAST_MA_TREND = "fast_ma_trend"
-    SLOW_MA_TREND = "slow_ma_trend"
-    RSI_TRIGGER = "rsi_trigger"
+    RSI_DIRECTION_RANGE = "rsi_direction_range"
 
 
 @dataclass(frozen=True)
@@ -183,19 +189,14 @@ class SignalCalculationResult:
         return self.feature(SignalFeature.FAST_MA_TREND).passed
 
     @property
-    def slow_trend_pass(self) -> bool:
-        """Return the MA30 feature result."""
-        return self.feature(SignalFeature.SLOW_MA_TREND).passed
-
-    @property
     def rsi_trigger_pass(self) -> bool:
-        """Return the current RSI feature result."""
-        return self.feature(SignalFeature.RSI_TRIGGER).passed
+        """Return the directional recent-RSI feature result."""
+        return self.feature(SignalFeature.RSI_DIRECTION_RANGE).passed
 
     @property
-    def recent_rsi_range_pass(self) -> bool:
-        """Return the T-lookback through T RSI range result."""
-        return self.feature(SignalFeature.RSI_RECENT_RANGE).passed
+    def rsi_latest_range_pass(self) -> bool:
+        """Return the latest RSI broad-range feature result."""
+        return self.feature(SignalFeature.RSI_LATEST_RANGE).passed
 
     @property
     def matched(self) -> bool:
@@ -203,49 +204,17 @@ class SignalCalculationResult:
         return all(result.passed for result in self.features)
 
 
-def calculate_rsi_zone_feature(
+def calculate_rsi_latest_range_feature(
     inputs: SignalCalculationInput,
 ) -> FeatureCalculationResult:
-    """Calculate whether RSI has entered the configured zone."""
-    matches = [
-        (index, value)
-        for index, value in enumerate(inputs.rsi_history)
-        if value is not None
-        and inputs.config.rsi_zone_low <= value <= inputs.config.rsi_zone_high
-    ]
-    latest = matches[-1] if matches else None
+    """Calculate whether the latest RSI is in the broad screening range."""
     return FeatureCalculationResult(
-        feature=SignalFeature.RSI_ZONE_ENTRY,
-        passed=bool(matches),
-        observed=latest[1] if latest is not None else None,
-        observed_index=latest[0] if latest is not None else None,
+        feature=SignalFeature.RSI_LATEST_RANGE,
+        passed=inputs.config.rsi_zone_low <= inputs.rsi <= inputs.config.rsi_zone_high,
+        observed=inputs.rsi,
+        observed_index=len(inputs.rsi_history) - 1,
         minimum=inputs.config.rsi_zone_low,
         maximum=inputs.config.rsi_zone_high,
-    )
-
-
-def calculate_recent_rsi_range_feature(
-    inputs: SignalCalculationInput,
-) -> FeatureCalculationResult:
-    """Check that every RSI from T-lookback through T is in range."""
-    window_size = inputs.config.recent_rsi_lookback + 1
-    window = inputs.rsi_history[-window_size:]
-    if inputs.direction is Direction.LONG:
-        minimum = inputs.config.long_recent_rsi_low
-        maximum = inputs.config.long_recent_rsi_high
-    else:
-        minimum = inputs.config.short_recent_rsi_low
-        maximum = inputs.config.short_recent_rsi_high
-    complete = len(window) == window_size and all(value is not None for value in window)
-    passed = complete and all(
-        minimum <= value <= maximum for value in window if value is not None
-    )
-    return FeatureCalculationResult(
-        feature=SignalFeature.RSI_RECENT_RANGE,
-        passed=passed,
-        observed=inputs.rsi,
-        minimum=minimum,
-        maximum=maximum,
     )
 
 
@@ -278,37 +247,26 @@ def calculate_fast_ma_feature(
     )
 
 
-def calculate_slow_ma_feature(
-    inputs: SignalCalculationInput,
-) -> FeatureCalculationResult:
-    """Calculate the directional MA30 trend feature."""
-    observed = inputs.slow_ma - inputs.previous_slow_ma
-    is_long = inputs.direction is Direction.LONG
-    return FeatureCalculationResult(
-        feature=SignalFeature.SLOW_MA_TREND,
-        passed=observed > 0.0 if is_long else observed < 0.0,
-        observed=observed,
-        minimum=0.0 if is_long else None,
-        maximum=0.0 if not is_long else None,
-    )
-
-
 def calculate_rsi_trigger_feature(
     inputs: SignalCalculationInput,
 ) -> FeatureCalculationResult:
-    """Calculate the current-bar RSI trigger feature."""
-    if inputs.direction is Direction.LONG:
-        minimum = inputs.config.long_trigger_rsi_low
-        maximum = inputs.config.long_trigger_rsi_high
-    else:
-        minimum = inputs.config.short_trigger_rsi_low
-        maximum = inputs.config.short_trigger_rsi_high
+    """Check that the recent RSI window is in the directional range."""
+    rsi_filter = inputs.config.rsi_filter_for(inputs.direction)
+    window = inputs.rsi_history[-inputs.config.recent_rsi_days :]
+    complete = len(window) == inputs.config.recent_rsi_days and all(
+        value is not None for value in window
+    )
+    passed = complete and all(
+        rsi_filter.trigger_low <= value <= rsi_filter.trigger_high
+        for value in window
+        if value is not None
+    )
     return FeatureCalculationResult(
-        feature=SignalFeature.RSI_TRIGGER,
-        passed=minimum <= inputs.rsi <= maximum,
+        feature=SignalFeature.RSI_DIRECTION_RANGE,
+        passed=passed,
         observed=inputs.rsi,
-        minimum=minimum,
-        maximum=maximum,
+        minimum=rsi_filter.trigger_low,
+        maximum=rsi_filter.trigger_high,
     )
 
 
@@ -316,10 +274,8 @@ def _calculate_signal_features(
     inputs: SignalCalculationInput,
 ) -> tuple[FeatureCalculationResult, ...]:
     return (
-        calculate_rsi_zone_feature(inputs),
-        calculate_recent_rsi_range_feature(inputs),
+        calculate_rsi_latest_range_feature(inputs),
         calculate_fast_ma_feature(inputs),
-        calculate_slow_ma_feature(inputs),
         calculate_rsi_trigger_feature(inputs),
     )
 
@@ -478,15 +434,11 @@ class Rsi50SignalEngine:
         atr = self.atr_values[current]
         fast = self.fast_ma_values[current]
         previous_fast = self.fast_ma_values[current - 1]
-        slow = self.slow_ma_values[current]
-        previous_slow = self.slow_ma_values[current - 1]
         if (
             rsi is None
             or atr is None
             or fast is None
             or previous_fast is None
-            or slow is None
-            or previous_slow is None
         ):
             return None
         return SignalCalculationInput(
@@ -497,8 +449,6 @@ class Rsi50SignalEngine:
             atr=atr,
             fast_ma=fast,
             previous_fast_ma=previous_fast,
-            slow_ma=slow,
-            previous_slow_ma=previous_slow,
             fast_ma_angle=moving_average_angle(
                 self.fast_ma_values,
                 self.config.ma_fast_angle_bars,

@@ -133,7 +133,7 @@ def main() -> None:
     short_count = len(batch.matches) - long_count
     data_age_days = (date.today() - batch.scan_date).days
     summary = (
-        f"RSI50 {_market_label(args.market)}日线扫描 {batch.scan_date:%Y-%m-%d}\n"
+        f"RSI 顺势交易 {_market_label(args.market)}日线扫描 {batch.scan_date:%Y-%m-%d}\n"
         f"扫描 {batch.scanned_symbols} 只，停牌/陈旧 {batch.stale_symbols} 只，"
         f"命中 {len(batch.matches)} 只（多 {long_count} / 空 {short_count}），"
         f"本次{'发送' if args.send else '选择'} {len(rendered)} 只，"
@@ -174,7 +174,7 @@ def main() -> None:
                 target_type,
                 target_id,
                 image_path,
-                content=(f"RSI50 信号 {index}/{total_groups}\n{'、'.join(symbols)}"),
+                content=(f"RSI 顺势交易信号 {index}/{total_groups}\n{'、'.join(symbols)}"),
                 msg_id=args.msg_id,
                 msg_seq=index + 1 if args.msg_id else None,
             )
@@ -223,7 +223,7 @@ def _filter_conditions(market: str, direction: str) -> str:
         Rsi50Config(ma_fast_min_angle_degrees=None) if market == "us" else Rsi50Config()
     )
     common = (
-        f"共同：RSI({config.rsi_period}) 曾进入 "
+        f"共同：最新一天 RSI({config.rsi_period}) 位于 "
         f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
     if config.ma_fast_min_angle_degrees is None:
@@ -238,20 +238,18 @@ def _filter_conditions(market: str, direction: str) -> str:
             f"MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 < "
             f"-{config.ma_fast_min_angle_degrees:g}°"
         )
-    lines = ["筛选条件（日线）：", common]
+    lines = ["RSI 顺势交易筛选条件（日线）：", common]
     if direction in {"long", "both"}:
+        rsi_filter = config.rsi_filter_for(Direction.LONG)
         lines.append(
-            f"多头：当前 RSI {config.long_trigger_rsi_low:g}–"
-            f"{config.long_trigger_rsi_high:g}，T-{config.recent_rsi_lookback} "
-            f"至 T 全部位于 {config.long_recent_rsi_low:g}–"
-            f"{config.long_recent_rsi_high:g}；{long_ma}、MA30 向上。"
+            f"多头：最近 {config.recent_rsi_days} 天 RSI 全部位于 "
+            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；{long_ma}。"
         )
     if direction in {"short", "both"}:
+        rsi_filter = config.rsi_filter_for(Direction.SHORT)
         lines.append(
-            f"空头：当前 RSI {config.short_trigger_rsi_low:g}–"
-            f"{config.short_trigger_rsi_high:g}，T-{config.recent_rsi_lookback} "
-            f"至 T 全部位于 {config.short_recent_rsi_low:g}–"
-            f"{config.short_recent_rsi_high:g}；{short_ma}、MA30 向下。"
+            f"空头：最近 {config.recent_rsi_days} 天 RSI 全部位于 "
+            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；{short_ma}。"
         )
     return "\n".join(lines)
 

@@ -1,7 +1,7 @@
 [project]
 name = "quant-trade-06"
 version = "0.1.0"
-description = "A-share quantitative trading strategy — M-top short / W-bottom long / RSI50 trend following"
+description = "A-share quantitative trading strategy — M-top short / W-bottom long / RSI trend following"
 requires-python = ">=3.11"
 dependencies = [
     "backtrader>=1.9.78.123",

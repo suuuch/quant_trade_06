@@ -1,4 +1,4 @@
-"""RSI 50 trend-following strategy package."""
+"""RSI trend-following strategy package."""
 
 from quant_trade.backtest import BacktestResult, run_backtest
 from quant_trade.data import load_duckdb_bars

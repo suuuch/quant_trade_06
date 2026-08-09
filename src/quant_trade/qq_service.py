@@ -130,27 +130,25 @@ def format_filter_conditions(direction: str = "both") -> str:
     """Describe the active A-share strategy conditions for a QQ summary."""
     config = Rsi50Config()
     common = (
-        f"共同：RSI({config.rsi_period}) 曾进入 "
+        f"共同：最新一天 RSI({config.rsi_period}) 位于 "
         f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
-    lines = ["筛选条件（日线）：", common]
+    lines = ["RSI 顺势交易筛选条件（日线）：", common]
     if direction in {"long", "both"}:
+        rsi_filter = config.rsi_filter_for(Direction.LONG)
         lines.append(
-            f"多头：当前 RSI {config.long_trigger_rsi_low:g}–"
-            f"{config.long_trigger_rsi_high:g}，T-{config.recent_rsi_lookback} "
-            f"至 T 全部位于 {config.long_recent_rsi_low:g}–"
-            f"{config.long_recent_rsi_high:g}；MA20 最近 "
+            f"多头：最近 {config.recent_rsi_days} 天 RSI 全部位于 "
+            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；MA20 最近 "
             f"{config.ma_fast_angle_bars} Bar 拟合角度 > "
-            f"{config.ma_fast_min_angle_degrees:g}°、MA30 向上。"
+            f"{config.ma_fast_min_angle_degrees:g}°。"
         )
     if direction in {"short", "both"}:
+        rsi_filter = config.rsi_filter_for(Direction.SHORT)
         lines.append(
-            f"空头：当前 RSI {config.short_trigger_rsi_low:g}–"
-            f"{config.short_trigger_rsi_high:g}，T-{config.recent_rsi_lookback} "
-            f"至 T 全部位于 {config.short_recent_rsi_low:g}–"
-            f"{config.short_recent_rsi_high:g}；MA20 最近 "
+            f"空头：最近 {config.recent_rsi_days} 天 RSI 全部位于 "
+            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；MA20 最近 "
             f"{config.ma_fast_angle_bars} Bar 拟合角度 < "
-            f"-{config.ma_fast_min_angle_degrees:g}°、MA30 向下。"
+            f"-{config.ma_fast_min_angle_degrees:g}°。"
         )
     return "\n".join(lines)
 
@@ -184,7 +182,7 @@ def format_wm_conditions(pattern: Literal["w", "m", "wm"]) -> str:
         "两端价差 ≤ 1 ATR；中间反弹/回撤 ≥ 1 ATR；"
         "W 底要求收盘 > 颈线 + 0.1 ATR，"
         "M 顶要求收盘 < 颈线 - 0.1 ATR。\n"
-        "该策略独立运行，不叠加 RSI50 或均线条件。"
+        "该策略独立运行，不叠加 RSI 顺势交易或均线条件。"
     )
 
 
@@ -335,7 +333,7 @@ def prepare_delivery(
     )
     short_count = len(batch.matches) - long_count
     summary = (
-        f"RSI50 A股日线扫描 {batch.scan_date:%Y-%m-%d}\n"
+        f"RSI 顺势交易 A股日线扫描 {batch.scan_date:%Y-%m-%d}\n"
         f"扫描 {batch.scanned_symbols} 只，停牌/陈旧 {batch.stale_symbols} 只，"
         f"命中 {len(batch.matches)} 只（多 {long_count} / 空 {short_count}），"
         f"图片消息 {len(images)} 条。\n\n"
@@ -659,7 +657,7 @@ class QQSignalService(botpy.Client):
                 self.preparing = True
                 if not rsi_current:
                     print(
-                        f"{now:%Y-%m-%d %H:%M:%S} 数据已齐，开始 RSI50 扫描。",
+                        f"{now:%Y-%m-%d %H:%M:%S} 数据已齐，开始 RSI 顺势交易扫描。",
                         flush=True,
                     )
                     self.prepared = await asyncio.to_thread(
@@ -670,7 +668,7 @@ class QQSignalService(botpy.Client):
                         charts_per_message=self.charts_per_message,
                     )
                     print(
-                        f"{self.prepared.scan_date} RSI50 扫描完成。",
+                        f"{self.prepared.scan_date} RSI 顺势交易扫描完成。",
                         flush=True,
                     )
                 if not wm_current:
@@ -751,7 +749,7 @@ class QQSignalService(botpy.Client):
                 target_type,
                 target_id,
                 image.path,
-                content=(f"RSI50 信号 {index}/{total}\n{'、'.join(image.symbols)}"),
+                content=(f"RSI 顺势交易信号 {index}/{total}\n{'、'.join(image.symbols)}"),
                 msg_id=msg_id,
                 msg_seq=index + 1,
             )

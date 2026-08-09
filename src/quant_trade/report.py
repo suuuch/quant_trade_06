@@ -98,54 +98,44 @@ def _audit_signal(
         action = "目标多仓 95%"
     else:
         action = "平多至 0%（A 股现货）"
-    rsi_feature = calculation.feature(SignalFeature.RSI_TRIGGER)
-    recent_rsi_feature = calculation.feature(SignalFeature.RSI_RECENT_RANGE)
-    if rsi_feature.minimum is None or rsi_feature.maximum is None:
-        raise ValueError("signal RSI feature has no configured range")
-    if recent_rsi_feature.minimum is None or recent_rsi_feature.maximum is None:
-        raise ValueError("signal recent RSI feature has no configured range")
-    rsi_rule = f"{rsi_feature.minimum:g} ≤ RSI ≤ {rsi_feature.maximum:g}"
-    rsi_pass = rsi_feature.passed
-    trend_pass = calculation.fast_trend_pass and calculation.slow_trend_pass
+    latest_rsi_feature = calculation.feature(SignalFeature.RSI_LATEST_RANGE)
+    direction_rsi_feature = calculation.feature(SignalFeature.RSI_DIRECTION_RANGE)
+    if latest_rsi_feature.minimum is None or latest_rsi_feature.maximum is None:
+        raise ValueError("signal latest RSI feature has no configured range")
+    if direction_rsi_feature.minimum is None or direction_rsi_feature.maximum is None:
+        raise ValueError("signal directional RSI feature has no configured range")
+    latest_rsi_rule = (
+        f"{latest_rsi_feature.minimum:g} ≤ RSI ≤ {latest_rsi_feature.maximum:g}"
+    )
+    direction_rsi_rule = (
+        f"{direction_rsi_feature.minimum:g} ≤ RSI ≤ "
+        f"{direction_rsi_feature.maximum:g}"
+    )
+    trend_pass = calculation.fast_trend_pass
 
-    zone_index = calculation.feature(SignalFeature.RSI_ZONE_ENTRY).observed_index
-    if zone_index is None:
-        raise ValueError("signal has no RSI 45–55 observation")
-    recent_rsi = engine.rsi_values[-(engine.config.recent_rsi_lookback + 1) :]
+    recent_rsi = engine.rsi_values[-engine.config.recent_rsi_days :]
     recent_rsi_values = [value for value in recent_rsi if value is not None]
     checks = [
         {
-            "name": "RSI 进入 45–55",
-            "value": (
-                f"{engine.bars[zone_index].timestamp:%Y-%m-%d}，"
-                f"RSI {engine.rsi_values[zone_index]:.2f}"
-            ),
-            "pass": True,
+            "name": "最新一天 RSI 总筛",
+            "value": f"RSI {signal.rsi:.2f}；要求 {latest_rsi_rule}",
+            "pass": calculation.rsi_latest_range_pass,
         },
         {
-            "name": "T-5 至 T 的 RSI 范围",
+            "name": "MA20 角度",
             "value": (
-                f"实际 {min(recent_rsi_values):.2f}–"
-                f"{max(recent_rsi_values):.2f}；要求全部位于 "
-                f"{recent_rsi_feature.minimum:g}–"
-                f"{recent_rsi_feature.maximum:g}"
-            ),
-            "pass": calculation.recent_rsi_range_pass,
-        },
-        {
-            "name": "MA20 角度、MA30 方向",
-            "value": (
-                f"MA20 最近 {engine.config.ma_fast_angle_bars} 根 "
-                f"{fast_angle:.2f}°"
-                f"（{'仅判断方向' if angle_threshold is None else f'阈值 {angle_threshold:g}°'}）；"
-                f"MA30 {inputs.previous_slow_ma:.3f} → {inputs.slow_ma:.3f}"
+                f"最近 {engine.config.ma_fast_angle_bars} 根 {fast_angle:.2f}°"
+                f"（{'仅判断方向' if angle_threshold is None else f'阈值 {angle_threshold:g}°'}）"
             ),
             "pass": trend_pass,
         },
         {
-            "name": "RSI 动量确认",
-            "value": f"RSI {signal.rsi:.2f}；要求 {rsi_rule}",
-            "pass": rsi_pass,
+            "name": f"最近 {engine.config.recent_rsi_days} 天方向 RSI",
+            "value": (
+                f"实际 {min(recent_rsi_values):.2f}–"
+                f"{max(recent_rsi_values):.2f}；要求每天满足 {direction_rsi_rule}"
+            ),
+            "pass": calculation.rsi_trigger_pass,
         },
     ]
     return {
@@ -156,7 +146,7 @@ def _audit_signal(
         "close": round(signal.close, 4),
         "rsi": round(signal.rsi, 2),
         "atr": round(signal.atr, 4),
-        "zone_index": zone_index,
+        "zone_index": current,
         "checks": checks,
     }
 
@@ -174,7 +164,7 @@ _REPORT_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RSI 50 日线信号审阅</title>
+<title>RSI 顺势交易日线信号审阅</title>
 <script>__PLOTLY_JS__</script>
 <style>
 :root{color-scheme:light dark;--bg:#f5f6f8;--panel:#fff;--text:#172033;--muted:#667085;--border:#d9dee8;--long:#18864b;--short:#c43b46;--accent:#2463eb;--soft:#eef2f8}

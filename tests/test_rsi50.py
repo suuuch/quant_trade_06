@@ -1,4 +1,4 @@
-"""Tests for the RSI 50 signal engine."""
+"""Tests for the RSI trend-following signal engine."""
 
 from datetime import datetime, timedelta
 
@@ -16,11 +16,9 @@ from quant_trade.rsi50 import (
     SignalFeature,
     calculate_fast_ma_feature,
     calculate_long_signal,
-    calculate_recent_rsi_range_feature,
+    calculate_rsi_latest_range_feature,
     calculate_rsi_trigger_feature,
-    calculate_rsi_zone_feature,
     calculate_short_signal,
-    calculate_slow_ma_feature,
     moving_average_angle,
 )
 
@@ -69,16 +67,12 @@ def _signals_for_closes(
 
 def test_config_rejects_invalid_directional_rsi_ranges() -> None:
     with pytest.raises(ValueError, match="long_trigger_rsi_low"):
-        Rsi50Config(long_trigger_rsi_low=56.0, long_trigger_rsi_high=55.0)
+        Rsi50Config(long_trigger_rsi_low=59.0, long_trigger_rsi_high=58.0)
     with pytest.raises(ValueError, match="short_trigger_rsi_low"):
         Rsi50Config(short_trigger_rsi_low=51.0, short_trigger_rsi_high=50.0)
 
-    with pytest.raises(ValueError, match="recent_rsi_lookback"):
-        Rsi50Config(recent_rsi_lookback=-1)
-    with pytest.raises(ValueError, match="long_recent_rsi_low"):
-        Rsi50Config(long_recent_rsi_low=59.0, long_recent_rsi_high=58.0)
-    with pytest.raises(ValueError, match="short_recent_rsi_low"):
-        Rsi50Config(short_recent_rsi_low=51.0, short_recent_rsi_high=50.0)
+    with pytest.raises(ValueError, match="recent_rsi_days"):
+        Rsi50Config(recent_rsi_days=4)
 
 
 def test_config_rejects_invalid_ma20_angle_settings() -> None:
@@ -86,6 +80,22 @@ def test_config_rejects_invalid_ma20_angle_settings() -> None:
         Rsi50Config(ma_fast_angle_bars=1)
     with pytest.raises(ValueError, match="ma_fast_min_angle_degrees"):
         Rsi50Config(ma_fast_min_angle_degrees=90.0)
+
+
+def test_config_returns_directional_rsi_filter_ranges() -> None:
+    config = Rsi50Config()
+
+    long_filter = config.rsi_filter_for(Direction.LONG)
+    short_filter = config.rsi_filter_for(Direction.SHORT)
+
+    assert (
+        long_filter.trigger_low,
+        long_filter.trigger_high,
+    ) == (50.0, 58.0)
+    assert (
+        short_filter.trigger_low,
+        short_filter.trigger_high,
+    ) == (42.0, 50.0)
 
 
 def test_moving_average_angle_uses_recent_fifteen_bar_regression() -> None:
@@ -116,7 +126,7 @@ def test_engine_emits_long_when_trend_and_rsi_ranges_match() -> None:
 
     assert signals
     assert all(signal.direction is Direction.LONG for signal in signals)
-    assert all(50.0 <= signal.rsi <= 55.0 for signal in signals)
+    assert all(50.0 <= signal.rsi <= 58.0 for signal in signals)
 
 
 def test_engine_rejects_long_when_ma20_angle_is_below_threshold() -> None:
@@ -141,7 +151,7 @@ def test_engine_emits_short_when_trend_and_rsi_ranges_match() -> None:
 
     assert signals
     assert all(signal.direction is Direction.SHORT for signal in signals)
-    assert all(45.0 <= signal.rsi <= 50.0 for signal in signals)
+    assert all(42.0 <= signal.rsi <= 50.0 for signal in signals)
 
 
 def test_direction_calculators_share_input_output_and_leave_filtering_outside() -> None:
@@ -175,20 +185,18 @@ def test_direction_calculators_share_input_output_and_leave_filtering_outside() 
     assert calculate_short_signal(short_result.inputs) == short_result
     assert long_result.matched is True
     assert short_result.matched is True
-    long_rsi = long_result.feature(SignalFeature.RSI_TRIGGER)
-    short_rsi = short_result.feature(SignalFeature.RSI_TRIGGER)
-    long_recent_rsi = long_result.feature(SignalFeature.RSI_RECENT_RANGE)
-    short_recent_rsi = short_result.feature(SignalFeature.RSI_RECENT_RANGE)
-    assert (long_rsi.minimum, long_rsi.maximum) == (45.0, 55.0)
-    assert (short_rsi.minimum, short_rsi.maximum) == (42.0, 50.0)
-    assert (long_recent_rsi.minimum, long_recent_rsi.maximum) == (50.0, 58.0)
-    assert (short_recent_rsi.minimum, short_recent_rsi.maximum) == (42.0, 50.0)
+    long_latest_rsi = long_result.feature(SignalFeature.RSI_LATEST_RANGE)
+    short_latest_rsi = short_result.feature(SignalFeature.RSI_LATEST_RANGE)
+    long_direction_rsi = long_result.feature(SignalFeature.RSI_DIRECTION_RANGE)
+    short_direction_rsi = short_result.feature(SignalFeature.RSI_DIRECTION_RANGE)
+    assert (long_latest_rsi.minimum, long_latest_rsi.maximum) == (40.0, 60.0)
+    assert (short_latest_rsi.minimum, short_latest_rsi.maximum) == (40.0, 60.0)
+    assert (long_direction_rsi.minimum, long_direction_rsi.maximum) == (50.0, 58.0)
+    assert (short_direction_rsi.minimum, short_direction_rsi.maximum) == (42.0, 50.0)
 
     feature_calculators = (
-        calculate_rsi_zone_feature,
-        calculate_recent_rsi_range_feature,
+        calculate_rsi_latest_range_feature,
         calculate_fast_ma_feature,
-        calculate_slow_ma_feature,
         calculate_rsi_trigger_feature,
     )
     feature_results = tuple(

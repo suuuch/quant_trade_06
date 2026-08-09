@@ -1,4 +1,4 @@
-"""Tests for the RSI50 QQ delivery command."""
+"""Tests for the RSI trend-following QQ delivery command."""
 
 from __future__ import annotations
 
@@ -51,8 +51,9 @@ def test_a_share_summary_lists_active_filter_conditions() -> None:
 
     assert "MA20 最近 15 Bar 拟合角度 > 40°" in text
     assert "MA20 最近 15 Bar 拟合角度 < -40°" in text
-    assert "RSI(14) 曾进入 45–55" in text
-    assert "多头：当前 RSI 45–55，T-5 至 T 全部位于 50–58" in text
-    assert "空头：当前 RSI 42–50，T-5 至 T 全部位于 42–50" in text
+    assert "最新一天 RSI(14) 位于 40–60" in text
+    assert "多头：最近 5 天 RSI 全部位于 50–58" in text
+    assert "空头：最近 5 天 RSI 全部位于 42–50" in text
+    assert "MA30" not in text
     assert "W 底" not in text
     assert "M 顶" not in text

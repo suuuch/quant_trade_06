@@ -1,4 +1,4 @@
-"""Scan PostgreSQL market universes for latest RSI 50 signals."""
+"""Scan PostgreSQL market universes for latest RSI trend-following signals."""
 
 from __future__ import annotations
 

@@ -28,7 +28,7 @@ def target_for_signal(
 
 
 class Rsi50TrendStrategy(bt.Strategy):  # type: ignore[misc]
-    """Execute RSI 50 signals through a Backtrader broker.
+    """Execute RSI trend-following signals through a Backtrader broker.
 
     The strategy targets a percentage of equity on a signal. An opposite signal
     reverses the position. No stop-loss or take-profit is added because the
