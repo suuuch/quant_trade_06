@@ -58,20 +58,20 @@ uv run python scripts/scan_rsi50_to_qq.py --market us
 
 ## 发送到 QQ
 
-发送给个人：
+发送到群聊（默认读取 `QQBOT_GROUP_OPENID`）：
 
 ```bash
 uv run python scripts/scan_rsi50_to_qq.py --market a --send
 uv run python scripts/scan_rsi50_to_qq.py --market us --send
 ```
 
-发送到群聊：
+如需临时发送给个人：
 
 ```bash
 uv run python scripts/scan_rsi50_to_qq.py \
   --market us \
   --send \
-  --target-type group
+  --target-type c2c
 ```
 
 也可以使用 `--target-id` 临时指定接收方，而不读取环境变量中的 openid。

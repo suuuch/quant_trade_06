@@ -36,7 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-type",
         choices=("c2c", "group"),
-        default="c2c",
+        default="group",
+        help="QQ target type; defaults to the configured group",
     )
     parser.add_argument("--target-id", help="QQ openid; defaults to environment")
     parser.add_argument("--lookback-bars", type=int, default=240)
