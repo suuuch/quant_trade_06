@@ -84,68 +84,32 @@ def _audit_signal(
     signal: Signal,
 ) -> dict[str, Any]:
     current = len(engine.bars) - 1
-    first = signal.first_pivot_index
-    second = signal.second_pivot_index
     is_long = signal.direction is Direction.LONG
-    first_price = engine.bars[first].low if is_long else engine.bars[first].high
-    second_price = engine.bars[second].low if is_long else engine.bars[second].high
-    second_atr = engine.atr_values[second]
-    if second_atr is None:
-        raise ValueError("signal second pivot has no ATR value")
     calculation = engine.calculate_current_signal(signal.direction)
     if calculation is None:
         raise ValueError("signal has no current calculation")
     inputs = calculation.inputs
-    if inputs.pattern.first_index != first or inputs.pattern.second_index != second:
-        raise ValueError("signal calculation pattern does not match signal")
     fast_angle = inputs.fast_ma_angle
     if fast_angle is None:
         raise ValueError("signal has incomplete MA20 angle values")
     angle_threshold = engine.config.ma_fast_min_angle_degrees
 
     if is_long:
-        retracement = signal.neckline - max(first_price, second_price)
         action = "目标多仓 95%"
-        pattern_name = "W 底"
     else:
-        retracement = min(first_price, second_price) - signal.neckline
         action = "平多至 0%（A 股现货）"
-        pattern_name = "M 顶"
-    break_threshold = calculation.breakout_threshold
     rsi_rule = (
         f"{engine.config.trigger_rsi_low:g} ≤ RSI ≤ {engine.config.trigger_rsi_high:g}"
     )
     rsi_pass = calculation.rsi_trigger_pass
     trend_pass = calculation.fast_trend_pass and calculation.slow_trend_pass
-    break_pass = calculation.breakout_pass
 
     zone_index = calculation.feature(SignalFeature.RSI_ZONE_ENTRY).observed_index
     if zone_index is None:
         raise ValueError("signal has no RSI 45–55 observation")
-    pivot_difference_atr = abs(second_price - first_price) / second_atr
-    retracement_atr = retracement / second_atr
-    distance = second - first
+    recent_rsi = engine.rsi_values[-(engine.config.recent_rsi_lookback + 1) :]
+    recent_rsi_values = [value for value in recent_rsi if value is not None]
     checks = [
-        {
-            "name": "摆动点已确认",
-            "value": "日线 3/3，两个摆动点均已等待右侧 3 根 K 线",
-            "pass": True,
-        },
-        {
-            "name": "形态间距",
-            "value": f"{distance} 根，要求 5–30 根",
-            "pass": 5 <= distance <= 30,
-        },
-        {
-            "name": "两端价差",
-            "value": f"{pivot_difference_atr:.3f} ATR，要求 ≤ 1 ATR",
-            "pass": pivot_difference_atr <= 1.0,
-        },
-        {
-            "name": "中间回撤/反弹",
-            "value": f"{retracement_atr:.3f} ATR，要求 ≥ 1 ATR",
-            "pass": retracement_atr >= 1.0,
-        },
         {
             "name": "RSI 进入 45–55",
             "value": (
@@ -153,6 +117,16 @@ def _audit_signal(
                 f"RSI {engine.rsi_values[zone_index]:.2f}"
             ),
             "pass": True,
+        },
+        {
+            "name": "T-5 至 T 的 RSI 范围",
+            "value": (
+                f"实际 {min(recent_rsi_values):.2f}–"
+                f"{max(recent_rsi_values):.2f}；要求全部位于 "
+                f"{engine.config.recent_rsi_low:g}–"
+                f"{engine.config.recent_rsi_high:g}"
+            ),
+            "pass": calculation.recent_rsi_range_pass,
         },
         {
             "name": "MA20 角度、MA30 方向",
@@ -165,14 +139,6 @@ def _audit_signal(
             "pass": trend_pass,
         },
         {
-            "name": "收盘有效突破",
-            "value": (
-                f"收盘 {signal.close:.3f}；颈线 {signal.neckline:.3f}；"
-                f"阈值 {break_threshold:.3f}"
-            ),
-            "pass": break_pass,
-        },
-        {
             "name": "RSI 动量确认",
             "value": f"RSI {signal.rsi:.2f}；要求 {rsi_rule}",
             "pass": rsi_pass,
@@ -182,19 +148,10 @@ def _audit_signal(
         "date": signal.timestamp.strftime("%Y-%m-%d"),
         "bar_index": current,
         "direction": signal.direction.value,
-        "pattern": pattern_name,
         "action": action,
         "close": round(signal.close, 4),
         "rsi": round(signal.rsi, 2),
         "atr": round(signal.atr, 4),
-        "neckline": round(signal.neckline, 4),
-        "break_threshold": round(break_threshold, 4),
-        "first_index": first,
-        "second_index": second,
-        "first_date": engine.bars[first].timestamp.strftime("%Y-%m-%d"),
-        "second_date": engine.bars[second].timestamp.strftime("%Y-%m-%d"),
-        "first_price": round(first_price, 4),
-        "second_price": round(second_price, 4),
         "zone_index": zone_index,
         "checks": checks,
     }
@@ -251,7 +208,7 @@ function currentStock(){return DATA[symbolSelect.value]}
 function currentIndex(){return Math.max(0,Number(signalSelect.value)||0)}
 function populateSignals(){
   signalSelect.innerHTML='';
-  currentStock().signals.forEach((signal,index)=>signalSelect.add(new Option(`${signal.date} · ${signal.direction==='long'?'多头':'空头'} · ${signal.pattern}`,String(index))));
+  currentStock().signals.forEach((signal,index)=>signalSelect.add(new Option(`${signal.date} · ${signal.direction==='long'?'多头':'空头'}`,String(index))));
   signalSelect.value='0';render();
 }
 function render(){
@@ -261,7 +218,7 @@ function render(){
   document.getElementById('counter').textContent=`${index+1} / ${stock.signals.length}`;
   previousButton.disabled=index===0;nextButton.disabled=index===stock.signals.length-1;
   document.getElementById('summary').innerHTML=`<div class="metric"><span>现货回测收益</span><strong>${stock.backtest.return_percent}%</strong></div><div class="metric"><span>最大回撤</span><strong>${stock.backtest.max_drawdown_percent}%</strong></div><div class="metric"><span>已平仓交易</span><strong>${stock.backtest.closed_trades}</strong></div><div class="metric"><span>信号总数</span><strong>${stock.signals.length}</strong></div>`;
-  document.getElementById('audit-head').innerHTML=`<strong class="${signal.direction}">${signal.date} · ${long?'多头':'空头'} · ${signal.pattern}</strong><span>${signal.action} · 收盘 ${signal.close} · RSI ${signal.rsi}</span>`;
+  document.getElementById('audit-head').innerHTML=`<strong class="${signal.direction}">${signal.date} · ${long?'多头':'空头'}</strong><span>${signal.action} · 收盘 ${signal.close} · RSI ${signal.rsi}</span>`;
   document.getElementById('checks').innerHTML=signal.checks.map(check=>`<tr><td>${check.name}</td><td>${check.value}</td><td class="${check.pass?'pass':''}">${check.pass?'满足':'不满足'}</td></tr>`).join('');
   document.getElementById('signal-list').innerHTML=stock.signals.map((item,itemIndex)=>`<button type="button" data-index="${itemIndex}" class="${itemIndex===index?'active':''}">${String(itemIndex+1).padStart(2,'0')} · ${item.date} · ${item.direction==='long'?'多头':'空头'} · ${item.action}</button>`).join('');
   document.querySelectorAll('#signal-list button').forEach(button=>button.addEventListener('click',()=>{signalSelect.value=button.dataset.index;render()}));
@@ -270,7 +227,6 @@ function render(){
     {type:'candlestick',x:bars.date,open:bars.open,high:bars.high,low:bars.low,close:bars.close,name:'K线',increasing:{line:{color:'#18864b'}},decreasing:{line:{color:'#c43b46'}},xaxis:'x',yaxis:'y'},
     {type:'scatter',mode:'lines',x:bars.date,y:bars.ma20,name:'MA20',line:{width:1.3,color:'#d08b20'},xaxis:'x',yaxis:'y'},
     {type:'scatter',mode:'lines',x:bars.date,y:bars.ma30,name:'MA30',line:{width:1.3,color:'#2463eb'},xaxis:'x',yaxis:'y'},
-    {type:'scatter',mode:'lines+markers',x:[bars.date[signal.first_index],bars.date[signal.second_index],signal.date],y:[signal.neckline,signal.neckline,signal.neckline],name:'颈线',line:{width:1.5,dash:'dash',color:'#7b8494'},marker:{size:0},xaxis:'x',yaxis:'y'},
     {type:'scatter',mode:'markers+text',x:[bars.date[signal.first_index],bars.date[signal.second_index]],y:[signal.first_price,signal.second_price],text:['P1','P2'],textposition:'top center',name:'摆动点',marker:{size:9,color:markerColor},xaxis:'x',yaxis:'y'},
     {type:'scatter',mode:'markers',x:[signal.date],y:[signal.close],name:'触发',marker:{size:14,color:markerColor,symbol:long?'triangle-up':'triangle-down',line:{width:1,color:'#fff'}},xaxis:'x',yaxis:'y'},
     {type:'scatter',mode:'lines',x:bars.date,y:bars.rsi,name:'RSI(14)',line:{width:1.5,color:'#805ad5'},xaxis:'x',yaxis:'y2'},

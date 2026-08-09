@@ -33,21 +33,21 @@ def test_chinese_font_candidates_include_linux_fonts() -> None:
 
 def _latest_long_frame() -> pd.DataFrame:
     closes = (
-        [80.0] * 35
-        + [118.0, 119.0, 120.0, 121.0, 122.0]
+        [45.04] * 35
+        + [118.70, 128.32, 128.33, 132.96, 138.33]
         + [
-            85.0,
-            87.0,
-            89.0,
-            87.0,
-            86.0,
-            87.0,
-            86.0,
-            85.0,
-            85.5,
-            85.5,
-            100.0,
-            94.0,
+            73.02,
+            74.40,
+            79.16,
+            76.24,
+            76.09,
+            74.44,
+            74.14,
+            73.02,
+            74.83,
+            74.75,
+            75.99,
+            80.63,
         ]
     )
     index = pd.date_range("2025-01-01", periods=len(closes), freq="D")
@@ -93,17 +93,37 @@ def test_scan_symbol_accepts_us_market() -> None:
 
 
 def test_us_market_uses_ma20_direction_without_angle_threshold() -> None:
-    frame = _latest_long_frame()
-    open_index = cast(int, frame.columns.get_loc("open"))
-    close_index = cast(int, frame.columns.get_loc("close"))
-    frame.iloc[-4:, [open_index, close_index]] = [
-        [86.0, 86.0],
-        [87.0, 87.0],
-        [88.0, 88.0],
-        [93.0, 93.0],
+    closes = [91.64] * 35 + [
+        99.13,
+        102.79,
+        104.92,
+        122.63,
+        134.94,
+        100.01,
+        100.69,
+        103.53,
+        102.50,
+        100.25,
+        101.13,
+        101.62,
+        100.01,
+        101.89,
+        102.34,
+        101.01,
+        104.46,
     ]
-    frame["high"] = frame["close"] + 0.5
-    frame["low"] = frame["close"] - 0.5
+    index = pd.date_range("2025-01-01", periods=len(closes), freq="D")
+    close = pd.Series(closes, index=index)
+    frame = pd.DataFrame(
+        {
+            "open": close,
+            "high": close + 0.5,
+            "low": close - 0.5,
+            "close": close,
+            "volume": 100_000.0,
+        },
+        index=index,
+    )
 
     a_share_match = scan_symbol_frame("000001.SZ", "Test", "Test", frame)
     us_match = scan_symbol_frame("US.TEST", "Test", "Test", frame, market="us")

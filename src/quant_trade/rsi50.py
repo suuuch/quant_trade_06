@@ -16,7 +16,7 @@ class Direction(StrEnum):
 
 def moving_average_angle(
     values: Sequence[float | None],
-    bars: int = 3,
+    bars: int = 15,
 ) -> float | None:
     """Return the regression angle in degrees for recent moving-average values."""
     if bars < 2:
@@ -66,15 +66,11 @@ class Rsi50Config:
     rsi_zone_high: float = 55.0
     trigger_rsi_low: float = 45.0
     trigger_rsi_high: float = 55.0
-    ma_fast_angle_bars: int = 3
+    recent_rsi_lookback: int = 5
+    recent_rsi_low: float = 50.0
+    recent_rsi_high: float = 58.0
+    ma_fast_angle_bars: int = 15
     ma_fast_min_angle_degrees: float | None = 40.0
-    pivot_left: int = 3
-    pivot_right: int = 3
-    min_pattern_distance: int = 5
-    max_pattern_distance: int = 30
-    max_peak_difference_atr: float = 1.0
-    min_middle_retracement_atr: float = 1.0
-    break_buffer_atr: float = 0.1
 
     def __post_init__(self) -> None:
         positive_ints = (
@@ -82,10 +78,6 @@ class Rsi50Config:
             self.ma_fast,
             self.ma_slow,
             self.atr_period,
-            self.pivot_left,
-            self.pivot_right,
-            self.min_pattern_distance,
-            self.max_pattern_distance,
         )
         if any(value <= 0 for value in positive_ints):
             raise ValueError("period and distance parameters must be positive")
@@ -95,35 +87,16 @@ class Rsi50Config:
             raise ValueError("rsi_zone_low must be less than rsi_zone_high")
         if self.trigger_rsi_low > self.trigger_rsi_high:
             raise ValueError("trigger_rsi_low must not exceed trigger_rsi_high")
+        if self.recent_rsi_lookback < 0:
+            raise ValueError("recent_rsi_lookback must not be negative")
+        if self.recent_rsi_low > self.recent_rsi_high:
+            raise ValueError("recent_rsi_low must not exceed recent_rsi_high")
         if self.ma_fast_angle_bars < 2:
             raise ValueError("ma_fast_angle_bars must be at least 2")
         if self.ma_fast_min_angle_degrees is not None and not (
             0.0 < self.ma_fast_min_angle_degrees < 90.0
         ):
             raise ValueError("ma_fast_min_angle_degrees must be in (0, 90)")
-        if self.min_pattern_distance > self.max_pattern_distance:
-            raise ValueError(
-                "min_pattern_distance must not exceed max_pattern_distance"
-            )
-
-
-@dataclass(frozen=True)
-class Pivot:
-    """A confirmed swing point."""
-
-    index: int
-    price: float
-    atr: float
-
-
-@dataclass(frozen=True)
-class Pattern:
-    """A confirmed W-bottom or M-top candidate."""
-
-    direction: Direction
-    first_index: int
-    second_index: int
-    neckline: float
 
 
 @dataclass(frozen=True)
@@ -134,10 +107,7 @@ class Signal:
     timestamp: datetime
     close: float
     rsi: float
-    neckline: float
     atr: float
-    first_pivot_index: int
-    second_pivot_index: int
 
 
 @dataclass(frozen=True)
@@ -145,7 +115,7 @@ class SignalCalculationInput:
     """Shared immutable input for one directional signal calculation."""
 
     config: Rsi50Config
-    pattern: Pattern
+    direction: Direction
     bar: Bar
     rsi: float
     atr: float
@@ -161,9 +131,9 @@ class SignalFeature(StrEnum):
     """Features evaluated for every directional signal candidate."""
 
     RSI_ZONE_ENTRY = "rsi_zone_entry"
+    RSI_RECENT_RANGE = "rsi_recent_range"
     FAST_MA_TREND = "fast_ma_trend"
     SLOW_MA_TREND = "slow_ma_trend"
-    BREAKOUT = "breakout"
     RSI_TRIGGER = "rsi_trigger"
 
 
@@ -194,19 +164,6 @@ class SignalCalculationResult:
         raise ValueError(f"missing signal feature: {name}")
 
     @property
-    def breakout_threshold(self) -> float:
-        """Return the directional neckline threshold."""
-        result = self.feature(SignalFeature.BREAKOUT)
-        threshold = (
-            result.minimum
-            if self.inputs.pattern.direction is Direction.LONG
-            else result.maximum
-        )
-        if threshold is None:
-            raise ValueError("breakout feature has no threshold")
-        return threshold
-
-    @property
     def fast_trend_pass(self) -> bool:
         """Return the MA20 feature result."""
         return self.feature(SignalFeature.FAST_MA_TREND).passed
@@ -217,14 +174,14 @@ class SignalCalculationResult:
         return self.feature(SignalFeature.SLOW_MA_TREND).passed
 
     @property
-    def breakout_pass(self) -> bool:
-        """Return the neckline breakout feature result."""
-        return self.feature(SignalFeature.BREAKOUT).passed
-
-    @property
     def rsi_trigger_pass(self) -> bool:
         """Return the current RSI feature result."""
         return self.feature(SignalFeature.RSI_TRIGGER).passed
+
+    @property
+    def recent_rsi_range_pass(self) -> bool:
+        """Return the T-lookback through T RSI range result."""
+        return self.feature(SignalFeature.RSI_RECENT_RANGE).passed
 
     @property
     def matched(self) -> bool:
@@ -235,11 +192,10 @@ class SignalCalculationResult:
 def calculate_rsi_zone_feature(
     inputs: SignalCalculationInput,
 ) -> FeatureCalculationResult:
-    """Calculate whether RSI entered the configured zone after the first pivot."""
+    """Calculate whether RSI has entered the configured zone."""
     matches = [
         (index, value)
         for index, value in enumerate(inputs.rsi_history)
-        if index >= inputs.pattern.first_index
         if value is not None
         and inputs.config.rsi_zone_low <= value <= inputs.config.rsi_zone_high
     ]
@@ -254,11 +210,32 @@ def calculate_rsi_zone_feature(
     )
 
 
+def calculate_recent_rsi_range_feature(
+    inputs: SignalCalculationInput,
+) -> FeatureCalculationResult:
+    """Check that every RSI from T-lookback through T is in range."""
+    window_size = inputs.config.recent_rsi_lookback + 1
+    window = inputs.rsi_history[-window_size:]
+    complete = len(window) == window_size and all(value is not None for value in window)
+    passed = complete and all(
+        inputs.config.recent_rsi_low <= value <= inputs.config.recent_rsi_high
+        for value in window
+        if value is not None
+    )
+    return FeatureCalculationResult(
+        feature=SignalFeature.RSI_RECENT_RANGE,
+        passed=passed,
+        observed=inputs.rsi,
+        minimum=inputs.config.recent_rsi_low,
+        maximum=inputs.config.recent_rsi_high,
+    )
+
+
 def calculate_fast_ma_feature(
     inputs: SignalCalculationInput,
 ) -> FeatureCalculationResult:
     """Calculate the directional MA20 trend feature."""
-    direction = inputs.pattern.direction
+    direction = inputs.direction
     threshold = inputs.config.ma_fast_min_angle_degrees
     if threshold is None:
         observed = inputs.fast_ma - inputs.previous_fast_ma
@@ -288,35 +265,13 @@ def calculate_slow_ma_feature(
 ) -> FeatureCalculationResult:
     """Calculate the directional MA30 trend feature."""
     observed = inputs.slow_ma - inputs.previous_slow_ma
-    is_long = inputs.pattern.direction is Direction.LONG
+    is_long = inputs.direction is Direction.LONG
     return FeatureCalculationResult(
         feature=SignalFeature.SLOW_MA_TREND,
         passed=observed > 0.0 if is_long else observed < 0.0,
         observed=observed,
         minimum=0.0 if is_long else None,
         maximum=0.0 if not is_long else None,
-    )
-
-
-def calculate_breakout_feature(
-    inputs: SignalCalculationInput,
-) -> FeatureCalculationResult:
-    """Calculate the directional neckline breakout feature."""
-    is_long = inputs.pattern.direction is Direction.LONG
-    offset = inputs.config.break_buffer_atr * inputs.atr
-    threshold = (
-        inputs.pattern.neckline + offset
-        if is_long
-        else inputs.pattern.neckline - offset
-    )
-    return FeatureCalculationResult(
-        feature=SignalFeature.BREAKOUT,
-        passed=(
-            inputs.bar.close > threshold if is_long else inputs.bar.close < threshold
-        ),
-        observed=inputs.bar.close,
-        minimum=threshold if is_long else None,
-        maximum=threshold if not is_long else None,
     )
 
 
@@ -342,9 +297,9 @@ def _calculate_signal_features(
 ) -> tuple[FeatureCalculationResult, ...]:
     return (
         calculate_rsi_zone_feature(inputs),
+        calculate_recent_rsi_range_feature(inputs),
         calculate_fast_ma_feature(inputs),
         calculate_slow_ma_feature(inputs),
-        calculate_breakout_feature(inputs),
         calculate_rsi_trigger_feature(inputs),
     )
 
@@ -353,8 +308,8 @@ def calculate_long_signal(
     inputs: SignalCalculationInput,
 ) -> SignalCalculationResult:
     """Calculate all long conditions without filtering or mutating engine state."""
-    if inputs.pattern.direction is not Direction.LONG:
-        raise ValueError("long signal calculation requires a long pattern")
+    if inputs.direction is not Direction.LONG:
+        raise ValueError("long signal calculation requires long direction")
     return SignalCalculationResult(
         inputs=inputs,
         features=_calculate_signal_features(inputs),
@@ -365,33 +320,11 @@ def calculate_short_signal(
     inputs: SignalCalculationInput,
 ) -> SignalCalculationResult:
     """Calculate all short conditions without filtering or mutating engine state."""
-    if inputs.pattern.direction is not Direction.SHORT:
-        raise ValueError("short signal calculation requires a short pattern")
+    if inputs.direction is not Direction.SHORT:
+        raise ValueError("short signal calculation requires short direction")
     return SignalCalculationResult(
         inputs=inputs,
         features=_calculate_signal_features(inputs),
-    )
-
-
-def is_pivot_high(
-    highs: list[float], index: int, left: int = 3, right: int = 3
-) -> bool:
-    """Return whether an index is a confirmed left/right pivot high."""
-    if index < left or index + right >= len(highs):
-        return False
-    price = highs[index]
-    return price > max(highs[index - left : index]) and price >= max(
-        highs[index + 1 : index + right + 1]
-    )
-
-
-def is_pivot_low(lows: list[float], index: int, left: int = 3, right: int = 3) -> bool:
-    """Return whether an index is a confirmed left/right pivot low."""
-    if index < left or index + right >= len(lows):
-        return False
-    price = lows[index]
-    return price < min(lows[index - left : index]) and price <= min(
-        lows[index + 1 : index + right + 1]
     )
 
 
@@ -405,12 +338,9 @@ class Rsi50SignalEngine:
         self.atr_values: list[float | None] = []
         self.fast_ma_values: list[float | None] = []
         self.slow_ma_values: list[float | None] = []
-        self.pivot_highs: list[Pivot] = []
-        self.pivot_lows: list[Pivot] = []
         self._average_gain: float | None = None
         self._average_loss: float | None = None
         self._average_true_range: float | None = None
-        self._emitted_patterns: set[tuple[Direction, int, int]] = set()
 
     def on_bar(self, bar: Bar) -> Signal | None:
         """Process one completed daily bar and return at most one signal."""
@@ -419,7 +349,6 @@ class Rsi50SignalEngine:
 
         self.bars.append(bar)
         self._update_indicators()
-        self._confirm_pivot()
         return self._evaluate_signal()
 
     def _update_indicators(self) -> None:
@@ -498,32 +427,11 @@ class Rsi50SignalEngine:
             ) / period
         return self._average_true_range
 
-    def _confirm_pivot(self) -> None:
-        config = self.config
-        candidate = len(self.bars) - 1 - config.pivot_right
-        if candidate < config.pivot_left:
-            return
-        atr = self.atr_values[candidate]
-        if atr is None:
-            return
-
-        highs = [bar.high for bar in self.bars]
-        lows = [bar.low for bar in self.bars]
-        if is_pivot_high(highs, candidate, config.pivot_left, config.pivot_right):
-            self.pivot_highs.append(Pivot(candidate, highs[candidate], atr))
-        if is_pivot_low(lows, candidate, config.pivot_left, config.pivot_right):
-            self.pivot_lows.append(Pivot(candidate, lows[candidate], atr))
-
     def _evaluate_signal(self) -> Signal | None:
         for direction in (Direction.LONG, Direction.SHORT):
             calculation = self.calculate_current_signal(direction)
             if calculation is None or not calculation.matched:
                 continue
-            pattern = calculation.inputs.pattern
-            key = (pattern.direction, pattern.first_index, pattern.second_index)
-            if key in self._emitted_patterns:
-                continue
-            self._emitted_patterns.add(key)
             return self._make_signal(calculation)
         return None
 
@@ -532,10 +440,7 @@ class Rsi50SignalEngine:
         direction: Direction,
     ) -> SignalCalculationResult | None:
         """Calculate one direction on the current bar without filtering results."""
-        pattern = self._latest_pattern(direction)
-        if pattern is None:
-            return None
-        inputs = self._calculation_inputs(pattern)
+        inputs = self._calculation_inputs(direction)
         if inputs is None:
             return None
         if direction is Direction.LONG:
@@ -544,7 +449,7 @@ class Rsi50SignalEngine:
 
     def _calculation_inputs(
         self,
-        pattern: Pattern,
+        direction: Direction,
     ) -> SignalCalculationInput | None:
         current = len(self.bars) - 1
         if current < 1:
@@ -566,7 +471,7 @@ class Rsi50SignalEngine:
             return None
         return SignalCalculationInput(
             config=self.config,
-            pattern=pattern,
+            direction=direction,
             bar=self.bars[current],
             rsi=rsi,
             atr=atr,
@@ -581,43 +486,13 @@ class Rsi50SignalEngine:
             rsi_history=tuple(self.rsi_values),
         )
 
-    def _latest_pattern(self, direction: Direction) -> Pattern | None:
-        pivots = self.pivot_lows if direction is Direction.LONG else self.pivot_highs
-        if len(pivots) < 2:
-            return None
-        first, second = pivots[-2:]
-        distance = second.index - first.index
-        config = self.config
-        if not config.min_pattern_distance <= distance <= config.max_pattern_distance:
-            return None
-        if abs(second.price - first.price) > (
-            config.max_peak_difference_atr * second.atr
-        ):
-            return None
-
-        if direction is Direction.LONG:
-            neckline = max(
-                bar.high for bar in self.bars[first.index : second.index + 1]
-            )
-            retracement = neckline - max(first.price, second.price)
-        else:
-            neckline = min(bar.low for bar in self.bars[first.index : second.index + 1])
-            retracement = min(first.price, second.price) - neckline
-        if retracement < config.min_middle_retracement_atr * second.atr:
-            return None
-        return Pattern(direction, first.index, second.index, neckline)
-
     @staticmethod
     def _make_signal(calculation: SignalCalculationResult) -> Signal:
         inputs = calculation.inputs
-        pattern = inputs.pattern
         return Signal(
-            direction=pattern.direction,
+            direction=inputs.direction,
             timestamp=inputs.bar.timestamp,
             close=inputs.bar.close,
             rsi=inputs.rsi,
-            neckline=pattern.neckline,
             atr=inputs.atr,
-            first_pivot_index=pattern.first_index,
-            second_pivot_index=pattern.second_index,
         )

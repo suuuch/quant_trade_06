@@ -11,7 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from quant_trade.qq_bot import QQBotClient, QQBotError, QQTargetType
-from quant_trade.rsi50 import Direction
+from quant_trade.rsi50 import Direction, Rsi50Config
 from quant_trade.scanner import (
     DatabaseSettings,
     DataFreshnessError,
@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
         help="QQ target type; defaults to the configured group",
     )
     parser.add_argument("--target-id", help="QQ openid; defaults to environment")
+    parser.add_argument(
+        "--msg-id",
+        help="recent group message ID used for a passive reply",
+    )
     parser.add_argument("--lookback-bars", type=int, default=240)
     parser.add_argument("--delay", type=float, default=10.0)
     parser.add_argument(
@@ -134,7 +138,8 @@ def main() -> None:
         f"命中 {len(batch.matches)} 只（多 {long_count} / 空 {short_count}），"
         f"本次{'发送' if args.send else '选择'} {len(rendered)} 只，"
         f"图片消息 {len(delivery_images)} 条，"
-        f"数据滞后 {data_age_days} 天"
+        f"数据滞后 {data_age_days} 天\n\n"
+        f"{_filter_conditions(args.market, args.direction)}"
     )
     print(summary)
     print(f"图片目录: {output_dir}")
@@ -151,7 +156,13 @@ def main() -> None:
     target_type: QQTargetType = args.target_type
     target_id = args.target_id or _default_target_id(target_type)
     client = QQBotClient()
-    client.send_text(target_type, target_id, summary)
+    client.send_text(
+        target_type,
+        target_id,
+        summary,
+        msg_id=args.msg_id,
+        msg_seq=1 if args.msg_id else None,
+    )
     failures: list[str] = []
     total_groups = len(delivery_images)
     for index, (group, image_path) in enumerate(delivery_images, start=1):
@@ -163,10 +174,9 @@ def main() -> None:
                 target_type,
                 target_id,
                 image_path,
-                content=(
-                    f"RSI50 信号 {index}/{total_groups}\n"
-                    f"{'、'.join(symbols)}"
-                ),
+                content=(f"RSI50 信号 {index}/{total_groups}\n{'、'.join(symbols)}"),
+                msg_id=args.msg_id,
+                msg_seq=index + 1 if args.msg_id else None,
             )
             print(f"QQ 已发送 {index}/{total_groups}: {'、'.join(symbols)}")
         except (QQBotError, OSError, ValueError) as error:
@@ -187,13 +197,12 @@ def _chunk_rendered(
 
 def _signal_text(match: SignalMatch) -> str:
     signal = match.signal
-    direction = "多头 W 底" if signal.direction is Direction.LONG else "空头 M 顶"
+    direction = "多头" if signal.direction is Direction.LONG else "空头"
     return (
         f"[{direction}] {match.symbol} {match.name} ({match.industry})\n"
         f"总市值 {_format_market_cap(match.market_cap_cny, match.market)} | "
         f"日期 {signal.timestamp:%Y-%m-%d} | 收盘 {signal.close:.3f} | "
-        f"RSI {signal.rsi:.2f} | 颈线 {signal.neckline:.3f} | "
-        f"ATR {signal.atr:.3f}"
+        f"RSI {signal.rsi:.2f} | ATR {signal.atr:.3f}"
     )
 
 
@@ -206,6 +215,39 @@ def _format_market_cap(value: float | None, market: str = "a") -> str:
 
 def _market_label(market: str) -> str:
     return "美股" if market == "us" else "A股"
+
+
+def _filter_conditions(market: str, direction: str) -> str:
+    """Describe the active strategy conditions for the QQ summary."""
+    config = (
+        Rsi50Config(ma_fast_min_angle_degrees=None) if market == "us" else Rsi50Config()
+    )
+    common = (
+        f"共同：RSI({config.rsi_period}) 曾进入 "
+        f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}，当前 RSI 位于 "
+        f"{config.trigger_rsi_low:g}–{config.trigger_rsi_high:g}；"
+        f"T-{config.recent_rsi_lookback} 至 T 共 "
+        f"{config.recent_rsi_lookback + 1} 个 RSI 全部位于 "
+        f"{config.recent_rsi_low:g}–{config.recent_rsi_high:g}。"
+    )
+    if config.ma_fast_min_angle_degrees is None:
+        long_ma = "MA20 向上"
+        short_ma = "MA20 向下"
+    else:
+        long_ma = (
+            f"MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 > "
+            f"{config.ma_fast_min_angle_degrees:g}°"
+        )
+        short_ma = (
+            f"MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 < "
+            f"-{config.ma_fast_min_angle_degrees:g}°"
+        )
+    lines = ["筛选条件（日线）：", common]
+    if direction in {"long", "both"}:
+        lines.append(f"多头：{long_ma}、MA30 向上。")
+    if direction in {"short", "both"}:
+        lines.append(f"空头：{short_ma}、MA30 向下。")
+    return "\n".join(lines)
 
 
 def _default_target_id(target_type: QQTargetType) -> str:

@@ -24,6 +24,10 @@ _default_target_id = cast(
     Callable[[QQTargetType], str],
     _MODULE._default_target_id,
 )
+_filter_conditions = cast(
+    Callable[[str, str], str],
+    _MODULE._filter_conditions,
+)
 
 
 def test_qq_delivery_defaults_to_group(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,3 +44,14 @@ def test_default_group_target_comes_from_environment(
     monkeypatch.setenv("QQBOT_GROUP_OPENID", "group-openid")
 
     assert _default_target_id("group") == "group-openid"
+
+
+def test_a_share_summary_lists_active_filter_conditions() -> None:
+    text = _filter_conditions("a", "both")
+
+    assert "MA20 最近 15 Bar 拟合角度 > 40°" in text
+    assert "MA20 最近 15 Bar 拟合角度 < -40°" in text
+    assert "RSI(14) 曾进入 45–55" in text
+    assert "T-5 至 T 共 6 个 RSI 全部位于 50–58" in text
+    assert "W 底" not in text
+    assert "M 顶" not in text

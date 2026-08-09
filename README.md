@@ -1,6 +1,32 @@
 # quant-trade-06
 
-RSI50 日线趋势信号扫描工具，支持 A 股和美股，并可将扫描结果发送到 QQ。
+RSI50 日线顺趋势信号扫描工具。项目从 PostgreSQL 读取 A 股或美股行情，
+筛选最新交易日信号，生成可逐只核对的 K 线图，并支持通过 QQ 群发送结果。
+
+## 当前策略
+
+所有条件均按已完成的日线计算。
+
+共同条件：
+
+- RSI 使用 RSI(14)，曾进入 45–55，信号日 RSI 仍位于 45–55；
+- 从 T-5 至信号日 T，共 6 个 RSI(14) 全部位于 50–58（含边界）；
+- 不使用 W 底、M 顶、摆动点、颈线或价格突破条件。
+
+A 股趋势条件：
+
+- 多头：最近 15 个 MA20 值的拟合直线角度严格大于 40°，且 MA30 向上；
+- 空头：最近 15 个 MA20 值的拟合直线角度严格小于 -40°，且 MA30 向下。
+
+MA20 角度使用原始价格单位计算：横轴每根 Bar 记为 1，对最近 15 个
+MA20 值线性拟合后，以 `degrees(atan(slope))` 转换为角度。
+
+美股使用相同的 RSI 条件，但不启用 40° 门槛，只判断 MA20 和 MA30 的
+方向。扫描前还会限制股票代码以 `US.` 开头、市值大于 10 亿美元、最新
+收盘价大于 5 美元，并要求最近 50 个交易日的平均及中位成交额均大于
+1,000 万美元。
+
+完整策略说明见 [docs/rsi_50_trend_strategy.md](docs/rsi_50_trend_strategy.md)。
 
 ## 环境准备
 
@@ -11,7 +37,7 @@ uv sync
 cp .env.example .env
 ```
 
-在 `.env` 中配置 PostgreSQL 连接：
+在 `.env` 中配置 PostgreSQL：
 
 ```dotenv
 PG_HOST=127.0.0.1
@@ -21,7 +47,7 @@ PG_USER=admin
 PG_PASSWORD=changeme
 ```
 
-发送 QQ 消息时还需要配置：
+需要 QQ 功能时继续配置：
 
 ```dotenv
 QQBOT_APPID=your_app_id
@@ -30,70 +56,132 @@ QQBOT_OPENID=your_openid
 QQBOT_GROUP_OPENID=your_group_openid
 ```
 
-## 执行扫描
+## 单次扫描
 
-只生成信号和图片，不发送 QQ 消息：
+只扫描并生成图片，不发送 QQ：
 
 ```bash
-# A 股（默认市场）
+# A 股
 uv run python scripts/scan_rsi50_to_qq.py --market a
 
 # 美股
 uv run python scripts/scan_rsi50_to_qq.py --market us
 ```
 
-美股扫描会先应用以下股票池条件：
+图片默认写入 `reports/qq_signals/<扫描日期>/`。命中结果按总市值从大到小
+排序，每张 QQ 合并图片默认包含 4 只股票。
 
-- 股票代码以 `US.` 开头；
-- 市值大于 10 亿美元；
-- 最新收盘价大于 5 美元；
-- 最近 50 个交易日平均成交额大于 1,000 万美元；
-- 最近 50 个交易日成交额中位数大于 1,000 万美元；
-- 每日成交额按 `收盘价 × 成交量` 计算。
+交易日执行时，如果 `tushare.daily` 或 `tushare.adj_factor` 缺少当天数据，
+程序会直接熔断。只有在明确需要扫描数据库最后交易日时才使用：
 
-通过股票池筛选后，美股与 A 股使用相同的 RSI50 技术形态条件。
-美股不启用 MA20 的 40° 角度门槛，只要求多头 MA20 向上、空头 MA20 向下。
+```bash
+uv run python scripts/scan_rsi50_to_qq.py \
+  --market a \
+  --skip-freshness-check
+```
 
-默认图片输出到 `reports/qq_signals/<扫描日期>/`。
+## 单次发送到 QQ
 
-## 发送到 QQ
-
-发送到群聊（默认读取 `QQBOT_GROUP_OPENID`）：
+发送全部命中结果到群聊，默认读取 `QQBOT_GROUP_OPENID`，图片消息之间等待
+10 秒：
 
 ```bash
 uv run python scripts/scan_rsi50_to_qq.py --market a --send
-uv run python scripts/scan_rsi50_to_qq.py --market us --send
 ```
 
-如需临时发送给个人：
+常用选项：
 
 ```bash
+# 只发送多头或空头
+uv run python scripts/scan_rsi50_to_qq.py --market a --send --direction long
+uv run python scripts/scan_rsi50_to_qq.py --market a --send --direction short
+
+# 临时指定群或个人
 uv run python scripts/scan_rsi50_to_qq.py \
-  --market us \
+  --market a \
+  --send \
+  --target-id your_openid
+
+uv run python scripts/scan_rsi50_to_qq.py \
+  --market a \
   --send \
   --target-type c2c
+
+# 查看所有参数
+uv run python scripts/scan_rsi50_to_qq.py --help
 ```
 
-也可以使用 `--target-id` 临时指定接收方，而不读取环境变量中的 openid。
+`--max-send 0` 表示发送全部结果，也是默认值。`--max-send N` 才会限制发送
+的股票数量。若最后交易日距当前日期超过 3 天，单次发送会拒绝执行；确认后
+可添加 `--allow-stale-data`。
 
-## 常用参数
+## 常驻 QQ 服务
+
+常驻服务同时负责交易日扫描和 QQ 群指令监听：
 
 ```bash
-# 只保留多头信号
-uv run python scripts/scan_rsi50_to_qq.py --market us --direction long
+uv run python scripts/run_a_share_qq_service.py
+```
 
-# 只保留空头信号
-uv run python scripts/scan_rsi50_to_qq.py --market us --direction short
+默认行为：
 
-# 限制发送数量并显示每个信号的详细信息
-uv run python scripts/scan_rsi50_to_qq.py \
-  --market us \
-  --send \
-  --max-send 10 \
-  --verbose
+- 每天 18:00（Asia/Shanghai）开始检查；
+- 非交易日跳过当天检查；
+- 交易日每 5 分钟检查一次 `tushare.daily` 和 `tushare.adj_factor`；
+- 两张表的最新日期都等于当天后，自动扫描并生成全部图片；
+- 扫描结果写入 `reports/qq_signals/latest_delivery.json`，重启后可继续使用；
+- 服务只准备结果，不会在扫描完成后主动刷屏，等待群内指令发送；
+- 每条图片消息之间默认等待 10 秒。
 
-# 查看全部参数
-uv run python scripts/scan_rsi50_to_qq.py --help
+QQ 群指令需要 `@机器人`：
+
+- `发送`：发送当前已经准备好的扫描结果；当天尚未完成扫描时返回状态；
+- `发送历史`：发送缓存中的最后交易日结果，不检查今天是否为交易日；若没有
+  缓存，则扫描数据库最后交易日并发送。
+
+服务参数：
+
+```bash
+uv run python scripts/run_a_share_qq_service.py --help
+```
+
+## Supervisor 部署
+
+仓库提供配置模板
+[`deploy/supervisor/quant_trade_06.conf`](deploy/supervisor/quant_trade_06.conf)。
+当前服务器部署目录为：
+
+```text
+/home/such/Documents/workspace/quant_trade_06
+```
+
+服务器上的 uv 路径为：
+
+```text
+/home/such/.local/bin/uv
+```
+
+安装或更新 Supervisor 配置后执行：
+
+```bash
+sudo supervisorctl reread
+sudo supervisorctl update
+sudo supervisorctl status quant_trade_06
+```
+
+常用管理命令：
+
+```bash
+sudo supervisorctl start quant_trade_06
+sudo supervisorctl stop quant_trade_06
+sudo supervisorctl restart quant_trade_06
+```
+
+日志位于：
+
+```text
+logs/qq_service.log
+logs/qq_service_error.log
 ```
 
 ## 验证代码

@@ -298,9 +298,9 @@ def render_signal_chart(
     *,
     window_bars: int = 100,
 ) -> Path:
-    """Render a PNG with candlesticks, MAs, pivots, neckline, and RSI."""
+    """Render a PNG with candlesticks, moving averages, and RSI."""
     signal = match.signal
-    start = max(0, min(signal.first_pivot_index - 5, len(match.frame) - window_bars))
+    start = max(0, len(match.frame) - window_bars)
     frame = match.frame.iloc[start:]
     dates = [timestamp.strftime("%Y-%m-%d") for timestamp in frame.index]
     x_values = list(range(len(frame)))
@@ -336,39 +336,9 @@ def render_signal_chart(
     price_axis.plot(x_values, fast_ma, color="#d18b1f", linewidth=1.2, label="MA20")
     price_axis.plot(x_values, slow_ma, color="#2f66d0", linewidth=1.2, label="MA30")
 
-    first_x = signal.first_pivot_index - start
-    second_x = signal.second_pivot_index - start
     trigger_x = len(match.frame) - 1 - start
     is_long = signal.direction is Direction.LONG
-    pivot_prices = (
-        [
-            match.frame.iloc[signal.first_pivot_index]["low"],
-            match.frame.iloc[signal.second_pivot_index]["low"],
-        ]
-        if is_long
-        else [
-            match.frame.iloc[signal.first_pivot_index]["high"],
-            match.frame.iloc[signal.second_pivot_index]["high"],
-        ]
-    )
     signal_color = "#d94b55" if is_long else "#218c5b"
-    price_axis.scatter(
-        [first_x, second_x],
-        pivot_prices,
-        color=signal_color,
-        s=45,
-        zorder=5,
-        label="Pivots",
-    )
-    price_axis.hlines(
-        signal.neckline,
-        first_x,
-        trigger_x,
-        color="#777777",
-        linestyle="--",
-        linewidth=1.2,
-        label="Neckline",
-    )
     price_axis.scatter(
         [trigger_x],
         [signal.close],
@@ -379,13 +349,7 @@ def render_signal_chart(
         zorder=6,
         label="Signal",
     )
-    price_axis.annotate(
-        "P1", (first_x, pivot_prices[0]), xytext=(0, 10), textcoords="offset points"
-    )
-    price_axis.annotate(
-        "P2", (second_x, pivot_prices[1]), xytext=(0, 10), textcoords="offset points"
-    )
-    direction = "LONG W-BOTTOM" if is_long else "SHORT M-TOP"
+    direction = "LONG" if is_long else "SHORT"
     price_axis.set_title(
         f"{match.symbol} {match.name} | {direction} | {signal.timestamp:%Y-%m-%d}"
     )

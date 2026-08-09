@@ -48,6 +48,7 @@ class QQBotClient:
         content: str,
         *,
         msg_id: str | None = None,
+        msg_seq: int | None = None,
     ) -> dict[str, Any]:
         """Send a text message."""
         if not content:
@@ -57,6 +58,8 @@ class QQBotClient:
             payload["msg_type"] = 0
         if msg_id is not None:
             payload["msg_id"] = msg_id
+        if msg_seq is not None:
+            payload["msg_seq"] = msg_seq
         return self._send_payload(target_type, target_id, payload)
 
     def send_image(
@@ -67,6 +70,7 @@ class QQBotClient:
         *,
         content: str = "",
         msg_id: str | None = None,
+        msg_seq: int | None = None,
     ) -> dict[str, Any]:
         """Upload a local PNG/JPEG and send it as a rich-media message."""
         if target_type == "channel":
@@ -99,6 +103,8 @@ class QQBotClient:
         }
         if msg_id is not None:
             payload["msg_id"] = msg_id
+        if msg_seq is not None:
+            payload["msg_seq"] = msg_seq
         return self._send_payload(target_type, target_id, payload)
 
     def _send_payload(
@@ -143,6 +149,7 @@ def send_qq_bot_message(
     content: str,
     *,
     msg_id: str | None = None,
+    msg_seq: int | None = None,
     app_id: str | None = None,
     app_secret: str | None = None,
     timeout: float = 10.0,
@@ -162,6 +169,7 @@ def send_qq_bot_message(
         target_id,
         content,
         msg_id=msg_id,
+        msg_seq=msg_seq,
     )
 
 
@@ -169,6 +177,7 @@ def send_qq_group_message(
     content: str,
     *,
     msg_id: str | None = None,
+    msg_seq: int | None = None,
     timeout: float = 10.0,
 ) -> dict[str, Any]:
     """Send text to the group configured by ``QQBOT_GROUP_OPENID``."""
@@ -181,6 +190,7 @@ def send_qq_group_message(
         group_openid,
         content,
         msg_id=msg_id,
+        msg_seq=msg_seq,
         timeout=timeout,
     )
 

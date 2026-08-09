@@ -38,6 +38,7 @@ def test_send_group_message(mock_urlopen: MagicMock) -> None:
         "group-openid",
         "交易信号已生成",
         msg_id="source-message-id",
+        msg_seq=2,
         app_id="app-id",
         app_secret="app-secret",
     )
@@ -57,6 +58,7 @@ def test_send_group_message(mock_urlopen: MagicMock) -> None:
         "content": "交易信号已生成",
         "msg_type": 0,
         "msg_id": "source-message-id",
+        "msg_seq": 2,
     }
 
 
@@ -77,9 +79,7 @@ def test_send_default_group_message(
 
     assert result["id"] == "message-id"
     message_request = mock_urlopen.call_args_list[1].args[0]
-    assert message_request.full_url.endswith(
-        "/v2/groups/configured-group/messages"
-    )
+    assert message_request.full_url.endswith("/v2/groups/configured-group/messages")
 
 
 @patch("quant_trade.qq_bot.urlopen")
