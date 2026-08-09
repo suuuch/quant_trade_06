@@ -15,7 +15,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
-from quant_trade.rsi50 import Bar, Direction
+from quant_trade.rsi50 import Bar, Direction, Rsi50SignalEngine
 from quant_trade.scanner import (
     _A_SHARE_SCAN_QUERY,
     _US_SHARE_SCAN_QUERY,
@@ -168,20 +168,33 @@ def render_wm_signal_chart(
     *,
     window_bars: int = 100,
 ) -> Path:
-    """Render a W/M entry chart with pivots and neckline."""
+    """Render a W/M chart with entry markers and observation indicators."""
     signal = match.signal
     start = max(0, min(signal.first_pivot_index - 5, len(match.frame) - window_bars))
     frame = match.frame.iloc[start:]
     x_values = list(range(len(frame)))
     dates = [timestamp.strftime("%Y-%m-%d") for timestamp in frame.index]
-    figure, axis = plt.subplots(figsize=(12, 7), constrained_layout=True)
+    figure, (price_axis, rsi_axis) = plt.subplots(
+        2,
+        1,
+        figsize=(12, 8),
+        height_ratios=(3, 1),
+        sharex=True,
+        constrained_layout=True,
+    )
     for x_value, (_, row) in zip(x_values, frame.iterrows(), strict=True):
         rising = float(row["close"]) >= float(row["open"])
         color = "#d94b55" if rising else "#218c5b"
-        axis.vlines(x_value, row["low"], row["high"], color=color, linewidth=1)
+        price_axis.vlines(
+            x_value,
+            row["low"],
+            row["high"],
+            color=color,
+            linewidth=1,
+        )
         body_low = min(float(row["open"]), float(row["close"]))
         body_height = max(abs(float(row["close"]) - float(row["open"])), 0.001)
-        axis.add_patch(
+        price_axis.add_patch(
             Rectangle(
                 (x_value - 0.32, body_low),
                 0.64,
@@ -191,6 +204,21 @@ def render_wm_signal_chart(
                 linewidth=0.8,
             )
         )
+    indicator_engine = _indicator_engine(match.frame)
+    price_axis.plot(
+        x_values,
+        indicator_engine.fast_ma_values[start:],
+        color="#d18b1f",
+        linewidth=1.2,
+        label="MA20",
+    )
+    price_axis.plot(
+        x_values,
+        indicator_engine.slow_ma_values[start:],
+        color="#2f66d0",
+        linewidth=1.2,
+        label="MA30",
+    )
     first_x = signal.first_pivot_index - start
     second_x = signal.second_pivot_index - start
     trigger_x = len(match.frame) - 1 - start
@@ -201,7 +229,13 @@ def render_wm_signal_chart(
         match.frame.iloc[signal.second_pivot_index][price_column],
     ]
     signal_color = "#d94b55" if is_w_bottom else "#218c5b"
-    axis.scatter(
+    trigger_bar = match.frame.iloc[-1]
+    entry_marker_price = _entry_marker_price(
+        low=float(trigger_bar["low"]),
+        high=float(trigger_bar["high"]),
+        direction=signal.direction,
+    )
+    price_axis.scatter(
         [first_x, second_x],
         pivot_prices,
         color=signal_color,
@@ -209,7 +243,7 @@ def render_wm_signal_chart(
         zorder=5,
         label="Pivots",
     )
-    axis.hlines(
+    price_axis.hlines(
         signal.neckline,
         first_x,
         trigger_x,
@@ -218,9 +252,9 @@ def render_wm_signal_chart(
         linewidth=1.2,
         label="Neckline",
     )
-    axis.scatter(
+    price_axis.scatter(
         [trigger_x],
-        [signal.close],
+        [entry_marker_price],
         marker="^" if is_w_bottom else "v",
         color=signal_color,
         edgecolor="white",
@@ -228,27 +262,72 @@ def render_wm_signal_chart(
         zorder=6,
         label="Entry",
     )
-    axis.annotate(
+    price_axis.annotate(
         "P1", (first_x, pivot_prices[0]), xytext=(0, 10), textcoords="offset points"
     )
-    axis.annotate(
+    price_axis.annotate(
         "P2", (second_x, pivot_prices[1]), xytext=(0, 10), textcoords="offset points"
     )
     pattern = "W-BOTTOM ENTRY" if is_w_bottom else "M-TOP ENTRY"
-    axis.set_title(
+    price_axis.set_title(
         f"{match.symbol} {match.name} | {pattern} | {signal.timestamp:%Y-%m-%d}"
     )
-    axis.set_ylabel("QFQ Price" if match.market == "a" else "Price")
-    axis.grid(alpha=0.18)
-    axis.legend(loc="upper left", ncols=3, fontsize=8)
+    price_axis.set_ylabel("QFQ Price" if match.market == "a" else "Price")
+    price_axis.set_yscale("log")
+    price_axis.grid(alpha=0.18)
+    price_axis.legend(loc="upper left", ncols=5, fontsize=8)
+
+    rsi_axis.plot(
+        x_values,
+        indicator_engine.rsi_values[start:],
+        color="#7a4cc2",
+        linewidth=1.2,
+        label="RSI(14) · 仅观察",
+    )
+    for level in (45, 50, 55, 58):
+        rsi_axis.axhline(level, color="#888888", linestyle=":", linewidth=0.8)
+    rsi_axis.set_ylim(0, 100)
+    rsi_axis.set_ylabel("RSI(14)")
+    rsi_axis.grid(alpha=0.18)
+    rsi_axis.legend(loc="upper left", fontsize=8)
     step = max(1, len(dates) // 10)
     ticks = list(range(0, len(dates), step))
-    axis.set_xticks(ticks, [dates[index] for index in ticks], rotation=30, ha="right")
+    rsi_axis.set_xticks(
+        ticks,
+        [dates[index] for index in ticks],
+        rotation=30,
+        ha="right",
+    )
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(destination, dpi=150)
     plt.close(figure)
     return destination
+
+
+def _entry_marker_price(*, low: float, high: float, direction: Direction) -> float:
+    """Place an entry marker clear of the signal candle on a log price axis."""
+    distance_ratio = 1.02
+    if direction is Direction.LONG:
+        return low / distance_ratio
+    return high * distance_ratio
+
+
+def _indicator_engine(frame: pd.DataFrame) -> Rsi50SignalEngine:
+    """Calculate MA20, MA30, and RSI solely for chart observation."""
+    engine = Rsi50SignalEngine()
+    for timestamp, row in frame.iterrows():
+        engine.on_bar(
+            Bar(
+                timestamp=cast(pd.Timestamp, timestamp).to_pydatetime(),
+                open=float(row["open"]),
+                high=float(row["high"]),
+                low=float(row["low"]),
+                close=float(row["close"]),
+                volume=float(row["volume"]),
+            )
+        )
+    return engine
 
 
 def _evaluate_rows(

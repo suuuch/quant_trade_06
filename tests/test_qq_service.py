@@ -47,6 +47,8 @@ def test_filter_conditions_include_current_a_share_rules() -> None:
     assert "MA20 最近 15 Bar 拟合角度 > 40°" in text
     assert "MA20 最近 15 Bar 拟合角度 < -40°" in text
     assert "RSI(14) 曾进入 45–55" in text
+    assert "多头：当前 RSI 45–55，T-5 至 T 全部位于 50–58" in text
+    assert "空头：当前 RSI 42–50，T-5 至 T 全部位于 42–50" in text
 
 
 @pytest.mark.parametrize(

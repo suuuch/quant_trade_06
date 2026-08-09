@@ -131,21 +131,25 @@ def format_filter_conditions(direction: str = "both") -> str:
     config = Rsi50Config()
     common = (
         f"共同：RSI({config.rsi_period}) 曾进入 "
-        f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}，当前 RSI 位于 "
-        f"{config.trigger_rsi_low:g}–{config.trigger_rsi_high:g}；"
-        f"T-{config.recent_rsi_lookback} 至 T 共 "
-        f"{config.recent_rsi_lookback + 1} 个 RSI 全部位于 "
-        f"{config.recent_rsi_low:g}–{config.recent_rsi_high:g}。"
+        f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
     lines = ["筛选条件（日线）：", common]
     if direction in {"long", "both"}:
         lines.append(
-            f"多头：MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 > "
+            f"多头：当前 RSI {config.long_trigger_rsi_low:g}–"
+            f"{config.long_trigger_rsi_high:g}，T-{config.recent_rsi_lookback} "
+            f"至 T 全部位于 {config.long_recent_rsi_low:g}–"
+            f"{config.long_recent_rsi_high:g}；MA20 最近 "
+            f"{config.ma_fast_angle_bars} Bar 拟合角度 > "
             f"{config.ma_fast_min_angle_degrees:g}°、MA30 向上。"
         )
     if direction in {"short", "both"}:
         lines.append(
-            f"空头：MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 < "
+            f"空头：当前 RSI {config.short_trigger_rsi_low:g}–"
+            f"{config.short_trigger_rsi_high:g}，T-{config.recent_rsi_lookback} "
+            f"至 T 全部位于 {config.short_recent_rsi_low:g}–"
+            f"{config.short_recent_rsi_high:g}；MA20 最近 "
+            f"{config.ma_fast_angle_bars} Bar 拟合角度 < "
             f"-{config.ma_fast_min_angle_degrees:g}°、MA30 向下。"
         )
     return "\n".join(lines)

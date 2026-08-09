@@ -224,11 +224,7 @@ def _filter_conditions(market: str, direction: str) -> str:
     )
     common = (
         f"共同：RSI({config.rsi_period}) 曾进入 "
-        f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}，当前 RSI 位于 "
-        f"{config.trigger_rsi_low:g}–{config.trigger_rsi_high:g}；"
-        f"T-{config.recent_rsi_lookback} 至 T 共 "
-        f"{config.recent_rsi_lookback + 1} 个 RSI 全部位于 "
-        f"{config.recent_rsi_low:g}–{config.recent_rsi_high:g}。"
+        f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
     if config.ma_fast_min_angle_degrees is None:
         long_ma = "MA20 向上"
@@ -244,9 +240,19 @@ def _filter_conditions(market: str, direction: str) -> str:
         )
     lines = ["筛选条件（日线）：", common]
     if direction in {"long", "both"}:
-        lines.append(f"多头：{long_ma}、MA30 向上。")
+        lines.append(
+            f"多头：当前 RSI {config.long_trigger_rsi_low:g}–"
+            f"{config.long_trigger_rsi_high:g}，T-{config.recent_rsi_lookback} "
+            f"至 T 全部位于 {config.long_recent_rsi_low:g}–"
+            f"{config.long_recent_rsi_high:g}；{long_ma}、MA30 向上。"
+        )
     if direction in {"short", "both"}:
-        lines.append(f"空头：{short_ma}、MA30 向下。")
+        lines.append(
+            f"空头：当前 RSI {config.short_trigger_rsi_low:g}–"
+            f"{config.short_trigger_rsi_high:g}，T-{config.recent_rsi_lookback} "
+            f"至 T 全部位于 {config.short_recent_rsi_low:g}–"
+            f"{config.short_recent_rsi_high:g}；{short_ma}、MA30 向下。"
+        )
     return "\n".join(lines)
 
 

@@ -67,14 +67,18 @@ def _signals_for_closes(
     ]
 
 
-def test_config_rejects_invalid_trigger_rsi_range() -> None:
-    with pytest.raises(ValueError, match="trigger_rsi_low"):
-        Rsi50Config(trigger_rsi_low=51.0, trigger_rsi_high=50.0)
+def test_config_rejects_invalid_directional_rsi_ranges() -> None:
+    with pytest.raises(ValueError, match="long_trigger_rsi_low"):
+        Rsi50Config(long_trigger_rsi_low=56.0, long_trigger_rsi_high=55.0)
+    with pytest.raises(ValueError, match="short_trigger_rsi_low"):
+        Rsi50Config(short_trigger_rsi_low=51.0, short_trigger_rsi_high=50.0)
 
     with pytest.raises(ValueError, match="recent_rsi_lookback"):
         Rsi50Config(recent_rsi_lookback=-1)
-    with pytest.raises(ValueError, match="recent_rsi_low"):
-        Rsi50Config(recent_rsi_low=59.0, recent_rsi_high=58.0)
+    with pytest.raises(ValueError, match="long_recent_rsi_low"):
+        Rsi50Config(long_recent_rsi_low=59.0, long_recent_rsi_high=58.0)
+    with pytest.raises(ValueError, match="short_recent_rsi_low"):
+        Rsi50Config(short_recent_rsi_low=51.0, short_recent_rsi_high=50.0)
 
 
 def test_config_rejects_invalid_ma20_angle_settings() -> None:
@@ -133,8 +137,7 @@ def test_engine_rejects_long_when_ma20_angle_is_below_threshold() -> None:
 
 def test_engine_emits_short_when_trend_and_rsi_ranges_match() -> None:
     closes = [220.0 - close for close in _trigger_rsi_45_to_55_closes()]
-    config = Rsi50Config(recent_rsi_low=42.0, recent_rsi_high=50.0)
-    signals = [signal for signal in _signals_for_closes(closes, config) if signal]
+    signals = [signal for signal in _signals_for_closes(closes) if signal]
 
     assert signals
     assert all(signal.direction is Direction.SHORT for signal in signals)
@@ -143,9 +146,7 @@ def test_engine_emits_short_when_trend_and_rsi_ranges_match() -> None:
 
 def test_direction_calculators_share_input_output_and_leave_filtering_outside() -> None:
     long_engine = Rsi50SignalEngine()
-    short_engine = Rsi50SignalEngine(
-        Rsi50Config(recent_rsi_low=42.0, recent_rsi_high=50.0)
-    )
+    short_engine = Rsi50SignalEngine()
     start = datetime(2025, 1, 1)
     closes = _trigger_rsi_45_to_55_closes()
     for index, close in enumerate(closes):
@@ -174,6 +175,14 @@ def test_direction_calculators_share_input_output_and_leave_filtering_outside() 
     assert calculate_short_signal(short_result.inputs) == short_result
     assert long_result.matched is True
     assert short_result.matched is True
+    long_rsi = long_result.feature(SignalFeature.RSI_TRIGGER)
+    short_rsi = short_result.feature(SignalFeature.RSI_TRIGGER)
+    long_recent_rsi = long_result.feature(SignalFeature.RSI_RECENT_RANGE)
+    short_recent_rsi = short_result.feature(SignalFeature.RSI_RECENT_RANGE)
+    assert (long_rsi.minimum, long_rsi.maximum) == (45.0, 55.0)
+    assert (short_rsi.minimum, short_rsi.maximum) == (42.0, 50.0)
+    assert (long_recent_rsi.minimum, long_recent_rsi.maximum) == (50.0, 58.0)
+    assert (short_recent_rsi.minimum, short_recent_rsi.maximum) == (42.0, 50.0)
 
     feature_calculators = (
         calculate_rsi_zone_feature,

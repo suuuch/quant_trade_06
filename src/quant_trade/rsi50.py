@@ -64,11 +64,15 @@ class Rsi50Config:
     atr_period: int = 14
     rsi_zone_low: float = 45.0
     rsi_zone_high: float = 55.0
-    trigger_rsi_low: float = 45.0
-    trigger_rsi_high: float = 55.0
+    long_trigger_rsi_low: float = 45.0
+    long_trigger_rsi_high: float = 55.0
+    short_trigger_rsi_low: float = 42.0
+    short_trigger_rsi_high: float = 50.0
     recent_rsi_lookback: int = 5
-    recent_rsi_low: float = 50.0
-    recent_rsi_high: float = 58.0
+    long_recent_rsi_low: float = 50.0
+    long_recent_rsi_high: float = 58.0
+    short_recent_rsi_low: float = 42.0
+    short_recent_rsi_high: float = 50.0
     ma_fast_angle_bars: int = 15
     ma_fast_min_angle_degrees: float | None = 40.0
 
@@ -85,12 +89,22 @@ class Rsi50Config:
             raise ValueError("ma_fast must be less than ma_slow")
         if self.rsi_zone_low >= self.rsi_zone_high:
             raise ValueError("rsi_zone_low must be less than rsi_zone_high")
-        if self.trigger_rsi_low > self.trigger_rsi_high:
-            raise ValueError("trigger_rsi_low must not exceed trigger_rsi_high")
+        if self.long_trigger_rsi_low > self.long_trigger_rsi_high:
+            raise ValueError(
+                "long_trigger_rsi_low must not exceed long_trigger_rsi_high"
+            )
+        if self.short_trigger_rsi_low > self.short_trigger_rsi_high:
+            raise ValueError(
+                "short_trigger_rsi_low must not exceed short_trigger_rsi_high"
+            )
         if self.recent_rsi_lookback < 0:
             raise ValueError("recent_rsi_lookback must not be negative")
-        if self.recent_rsi_low > self.recent_rsi_high:
-            raise ValueError("recent_rsi_low must not exceed recent_rsi_high")
+        if self.long_recent_rsi_low > self.long_recent_rsi_high:
+            raise ValueError("long_recent_rsi_low must not exceed long_recent_rsi_high")
+        if self.short_recent_rsi_low > self.short_recent_rsi_high:
+            raise ValueError(
+                "short_recent_rsi_low must not exceed short_recent_rsi_high"
+            )
         if self.ma_fast_angle_bars < 2:
             raise ValueError("ma_fast_angle_bars must be at least 2")
         if self.ma_fast_min_angle_degrees is not None and not (
@@ -216,18 +230,22 @@ def calculate_recent_rsi_range_feature(
     """Check that every RSI from T-lookback through T is in range."""
     window_size = inputs.config.recent_rsi_lookback + 1
     window = inputs.rsi_history[-window_size:]
+    if inputs.direction is Direction.LONG:
+        minimum = inputs.config.long_recent_rsi_low
+        maximum = inputs.config.long_recent_rsi_high
+    else:
+        minimum = inputs.config.short_recent_rsi_low
+        maximum = inputs.config.short_recent_rsi_high
     complete = len(window) == window_size and all(value is not None for value in window)
     passed = complete and all(
-        inputs.config.recent_rsi_low <= value <= inputs.config.recent_rsi_high
-        for value in window
-        if value is not None
+        minimum <= value <= maximum for value in window if value is not None
     )
     return FeatureCalculationResult(
         feature=SignalFeature.RSI_RECENT_RANGE,
         passed=passed,
         observed=inputs.rsi,
-        minimum=inputs.config.recent_rsi_low,
-        maximum=inputs.config.recent_rsi_high,
+        minimum=minimum,
+        maximum=maximum,
     )
 
 
@@ -279,16 +297,18 @@ def calculate_rsi_trigger_feature(
     inputs: SignalCalculationInput,
 ) -> FeatureCalculationResult:
     """Calculate the current-bar RSI trigger feature."""
+    if inputs.direction is Direction.LONG:
+        minimum = inputs.config.long_trigger_rsi_low
+        maximum = inputs.config.long_trigger_rsi_high
+    else:
+        minimum = inputs.config.short_trigger_rsi_low
+        maximum = inputs.config.short_trigger_rsi_high
     return FeatureCalculationResult(
         feature=SignalFeature.RSI_TRIGGER,
-        passed=(
-            inputs.config.trigger_rsi_low
-            <= inputs.rsi
-            <= inputs.config.trigger_rsi_high
-        ),
+        passed=minimum <= inputs.rsi <= maximum,
         observed=inputs.rsi,
-        minimum=inputs.config.trigger_rsi_low,
-        maximum=inputs.config.trigger_rsi_high,
+        minimum=minimum,
+        maximum=maximum,
     )
 
 

@@ -98,10 +98,14 @@ def _audit_signal(
         action = "目标多仓 95%"
     else:
         action = "平多至 0%（A 股现货）"
-    rsi_rule = (
-        f"{engine.config.trigger_rsi_low:g} ≤ RSI ≤ {engine.config.trigger_rsi_high:g}"
-    )
-    rsi_pass = calculation.rsi_trigger_pass
+    rsi_feature = calculation.feature(SignalFeature.RSI_TRIGGER)
+    recent_rsi_feature = calculation.feature(SignalFeature.RSI_RECENT_RANGE)
+    if rsi_feature.minimum is None or rsi_feature.maximum is None:
+        raise ValueError("signal RSI feature has no configured range")
+    if recent_rsi_feature.minimum is None or recent_rsi_feature.maximum is None:
+        raise ValueError("signal recent RSI feature has no configured range")
+    rsi_rule = f"{rsi_feature.minimum:g} ≤ RSI ≤ {rsi_feature.maximum:g}"
+    rsi_pass = rsi_feature.passed
     trend_pass = calculation.fast_trend_pass and calculation.slow_trend_pass
 
     zone_index = calculation.feature(SignalFeature.RSI_ZONE_ENTRY).observed_index
@@ -123,8 +127,8 @@ def _audit_signal(
             "value": (
                 f"实际 {min(recent_rsi_values):.2f}–"
                 f"{max(recent_rsi_values):.2f}；要求全部位于 "
-                f"{engine.config.recent_rsi_low:g}–"
-                f"{engine.config.recent_rsi_high:g}"
+                f"{recent_rsi_feature.minimum:g}–"
+                f"{recent_rsi_feature.maximum:g}"
             ),
             "pass": calculation.recent_rsi_range_pass,
         },
