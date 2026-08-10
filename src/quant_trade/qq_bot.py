@@ -82,15 +82,13 @@ class QQBotClient:
         if not image_bytes:
             raise ValueError("image_path must not be empty")
 
-        upload = _post_json(
+        upload = self._post_with_token_retry(
             _file_endpoint(target_type, target_id),
             {
                 "file_type": 1,
                 "file_data": base64.b64encode(image_bytes).decode("ascii"),
                 "srv_send_msg": False,
             },
-            headers=self._headers(),
-            timeout=self.timeout,
         )
         file_info = upload.get("file_info")
         if not isinstance(file_info, str) or not file_info:
@@ -115,12 +113,33 @@ class QQBotClient:
     ) -> dict[str, Any]:
         if not target_id:
             raise ValueError("target_id must not be empty")
-        return _post_json(
+        return self._post_with_token_retry(
             _message_endpoint(target_type, target_id),
             payload,
-            headers=self._headers(),
-            timeout=self.timeout,
         )
+
+    def _post_with_token_retry(
+        self,
+        url: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return _post_json(
+                url,
+                payload,
+                headers=self._headers(),
+                timeout=self.timeout,
+            )
+        except QQBotError as error:
+            if not _is_token_expired_error(str(error)):
+                raise
+            self._access_token = None
+            return _post_json(
+                url,
+                payload,
+                headers=self._headers(),
+                timeout=self.timeout,
+            )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -253,3 +272,7 @@ def _post_json(
     if not isinstance(result, dict):
         raise QQBotError("QQ Bot API returned a non-object response")
     return result
+
+
+def _is_token_expired_error(message: str) -> bool:
+    return '"code":11244' in message or '"err_code":11244' in message

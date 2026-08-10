@@ -70,11 +70,11 @@ class Rsi50Config:
     ma_fast: int = 20
     ma_slow: int = 30
     atr_period: int = 14
-    rsi_zone_low: float = 40.0
-    rsi_zone_high: float = 60.0
+    rsi_zone_low: float = 42.0
+    rsi_zone_high: float = 58.0
     long_trigger_rsi_low: float = 50.0
-    long_trigger_rsi_high: float = 65.0
-    short_trigger_rsi_low: float = 35.0
+    long_trigger_rsi_high: float = 58.0
+    short_trigger_rsi_low: float = 42.0
     short_trigger_rsi_high: float = 50.0
     recent_rsi_days: int = 5
     ma_fast_angle_bars: int = 15

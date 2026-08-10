@@ -91,11 +91,11 @@ def test_config_returns_directional_rsi_filter_ranges() -> None:
     assert (
         long_filter.trigger_low,
         long_filter.trigger_high,
-    ) == (50.0, 65.0)
+    ) == (50.0, 58.0)
     assert (
         short_filter.trigger_low,
         short_filter.trigger_high,
-    ) == (35.0, 50.0)
+    ) == (42.0, 50.0)
 
 
 def test_moving_average_angle_uses_recent_fifteen_bar_regression() -> None:
@@ -189,10 +189,10 @@ def test_direction_calculators_share_input_output_and_leave_filtering_outside() 
     short_latest_rsi = short_result.feature(SignalFeature.RSI_LATEST_RANGE)
     long_direction_rsi = long_result.feature(SignalFeature.RSI_DIRECTION_RANGE)
     short_direction_rsi = short_result.feature(SignalFeature.RSI_DIRECTION_RANGE)
-    assert (long_latest_rsi.minimum, long_latest_rsi.maximum) == (40.0, 60.0)
-    assert (short_latest_rsi.minimum, short_latest_rsi.maximum) == (40.0, 60.0)
-    assert (long_direction_rsi.minimum, long_direction_rsi.maximum) == (50.0, 65.0)
-    assert (short_direction_rsi.minimum, short_direction_rsi.maximum) == (35.0, 50.0)
+    assert (long_latest_rsi.minimum, long_latest_rsi.maximum) == (42.0, 58.0)
+    assert (short_latest_rsi.minimum, short_latest_rsi.maximum) == (42.0, 58.0)
+    assert (long_direction_rsi.minimum, long_direction_rsi.maximum) == (50.0, 58.0)
+    assert (short_direction_rsi.minimum, short_direction_rsi.maximum) == (42.0, 50.0)
 
     feature_calculators = (
         calculate_rsi_latest_range_feature,

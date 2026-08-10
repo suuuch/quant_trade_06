@@ -2,6 +2,7 @@
 
 from datetime import date, datetime, time
 from pathlib import Path
+from threading import Event
 from zoneinfo import ZoneInfo
 
 import duckdb
@@ -19,6 +20,7 @@ from quant_trade.delivery_store import (
 )
 from quant_trade.qq_service import (
     ClearCacheCommand,
+    QQSignalService,
     RsiCommand,
     StopCommand,
     WmCommand,
@@ -31,7 +33,7 @@ from quant_trade.qq_service import (
     seconds_until_check,
 )
 from quant_trade.rsi50 import Direction
-from quant_trade.scanner import MarketDataStatus
+from quant_trade.scanner import DatabaseSettings, MarketDataStatus
 
 
 def test_market_data_is_ready_only_when_both_tables_have_today() -> None:
@@ -61,9 +63,9 @@ def test_filter_conditions_include_current_a_share_rules() -> None:
 
     assert "MA20 最近 15 Bar 拟合角度 > 20°" in text
     assert "MA20 最近 15 Bar 拟合角度 < -20°" in text
-    assert "最新一天 RSI(14) 位于 40–60" in text
-    assert "多头：最近 5 天 RSI 全部位于 50–65" in text
-    assert "空头：最近 5 天 RSI 全部位于 35–50" in text
+    assert "最新一天 RSI(14) 位于 42–58" in text
+    assert "多头：最近 5 天 RSI 全部位于 50–58" in text
+    assert "空头：最近 5 天 RSI 全部位于 42–50" in text
     assert "MA30" not in text
 
 
@@ -204,3 +206,68 @@ def test_prepared_delivery_is_written_to_duckdb(tmp_path: Path) -> None:
 
     assert delivery_rows == [("RSI 顺势交易", "a", date(2026, 8, 7), 1)]
     assert image_rows == [(1, '["000001.SZ"]', "long")]
+
+
+def test_batch_delivery_uses_passive_reply_for_images(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str | None, int | None]] = []
+
+    class FakeQQBotClient:
+        def send_text(
+            self,
+            target_type: str,
+            target_id: str,
+            content: str,
+            *,
+            msg_id: str | None = None,
+            msg_seq: int | None = None,
+        ) -> dict[str, str]:
+            calls.append(("text", msg_id, msg_seq))
+            return {}
+
+        def send_image(
+            self,
+            target_type: str,
+            target_id: str,
+            image_path: Path,
+            *,
+            content: str = "",
+            msg_id: str | None = None,
+            msg_seq: int | None = None,
+        ) -> dict[str, str]:
+            calls.append(("image", msg_id, msg_seq))
+            return {}
+
+    monkeypatch.setattr("quant_trade.qq_service.QQBotClient", FakeQQBotClient)
+    image = tmp_path / "batch.png"
+    image.write_bytes(b"png")
+    service = QQSignalService(
+        settings=DatabaseSettings("localhost", 5432, "db", "user", "password"),
+        output_root=tmp_path,
+        check_time=time(18),
+        poll_seconds=300.0,
+        send_delay=0.0,
+        lookback_bars=240,
+        charts_per_message=4,
+    )
+    prepared = PreparedDelivery(
+        scan_date=date(2026, 8, 10),
+        summary="summary",
+        images=(DeliveryImage(image, ("000001.SZ",), Direction.LONG),),
+        metadata=DeliveryMetadata("RSI 顺势交易", "a"),
+    )
+
+    service._deliver_sync(
+        "group",
+        "group-openid",
+        "source-message-id",
+        prepared,
+        Event(),
+    )
+
+    assert calls == [
+        ("text", "source-message-id", 1),
+        ("image", "source-message-id", 2),
+    ]

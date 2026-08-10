@@ -177,7 +177,7 @@ def render_wm_signal_chart(
     figure, (price_axis, rsi_axis) = plt.subplots(
         2,
         1,
-        figsize=(12, 8),
+        figsize=(9, 6),
         height_ratios=(3, 1),
         sharex=True,
         constrained_layout=True,
@@ -300,7 +300,7 @@ def render_wm_signal_chart(
     )
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(destination, dpi=150)
+    figure.savefig(destination, dpi=100)
     plt.close(figure)
     return destination
 

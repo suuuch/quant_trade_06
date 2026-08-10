@@ -372,7 +372,7 @@ def render_signal_chart(
     figure, (price_axis, rsi_axis) = plt.subplots(
         2,
         1,
-        figsize=(12, 8),
+        figsize=(9, 6),
         height_ratios=(3, 1),
         sharex=True,
         constrained_layout=True,
@@ -436,7 +436,7 @@ def render_signal_chart(
     )
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(destination, dpi=150)
+    figure.savefig(destination, dpi=100)
     plt.close(figure)
     return destination
 
@@ -453,7 +453,7 @@ def render_signal_sheet(
     figure, axes = plt.subplots(
         rows,
         columns,
-        figsize=(12 * columns, 8 * rows),
+        figsize=(9 * columns, 6 * rows),
         squeeze=False,
     )
     for axis, image_path in zip(axes.flat, image_paths, strict=False):
@@ -464,7 +464,7 @@ def render_signal_sheet(
     destination = Path(output)
     destination.parent.mkdir(parents=True, exist_ok=True)
     figure.subplots_adjust(left=0, right=1, top=1, bottom=0, wspace=0, hspace=0)
-    figure.savefig(destination, dpi=150)
+    figure.savefig(destination, dpi=100)
     plt.close(figure)
     return destination
 

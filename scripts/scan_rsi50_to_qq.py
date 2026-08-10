@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--charts-per-message",
         type=int,
-        default=4,
+        default=8,
         help="combine this many stock charts into each QQ image message",
     )
     parser.add_argument("--allow-stale-data", action="store_true")
