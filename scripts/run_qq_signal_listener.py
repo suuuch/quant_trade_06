@@ -17,7 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-hour", type=int, default=18)
     parser.add_argument("--poll-seconds", type=float, default=300.0)
-    parser.add_argument("--send-delay", type=float, default=10.0)
+    parser.add_argument("--send-delay", type=float, default=3.0)
     parser.add_argument("--lookback-bars", type=int, default=240)
     parser.add_argument("--charts-per-message", type=int, default=4)
     parser.add_argument(

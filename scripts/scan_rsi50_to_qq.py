@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         help="recent group message ID used for a passive reply",
     )
     parser.add_argument("--lookback-bars", type=int, default=240)
-    parser.add_argument("--delay", type=float, default=10.0)
+    parser.add_argument("--delay", type=float, default=3.0)
     parser.add_argument(
         "--direction",
         choices=("long", "short", "both"),
