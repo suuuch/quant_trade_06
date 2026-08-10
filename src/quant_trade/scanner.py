@@ -204,7 +204,10 @@ def _scan_database(
                     if market == "a"
                     else _US_SHARE_SCAN_ON_DATE_QUERY
                 )
-                cursor.execute(query, (scan_date, lookback_bars))
+                cutoff_date: date | str = (
+                    scan_date.strftime("%Y%m%d") if market == "a" else scan_date
+                )
+                cursor.execute(query, (cutoff_date, lookback_bars))
             current_symbol = ""
             rows: list[tuple[Any, ...]] = []
             for row in cursor:

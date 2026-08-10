@@ -325,11 +325,15 @@ def read_a_share_latest_data_date(settings: DatabaseSettings) -> date | None:
         return None
     if isinstance(row[0], date):
         return row[0]
-    return datetime.fromisoformat(str(row[0])).date()
+    value = str(row[0])
+    if len(value) == 8 and value.isdigit():
+        return datetime.strptime(value, "%Y%m%d").date()
+    return datetime.fromisoformat(value).date()
 
 
 def a_share_data_exists(settings: DatabaseSettings, scan_date: date) -> bool:
     """Return whether both A-share source tables contain the requested date."""
+    trade_date = scan_date.strftime("%Y%m%d")
     with psycopg.connect(
         host=settings.host,
         port=settings.port,
@@ -345,7 +349,7 @@ def a_share_data_exists(settings: DatabaseSettings, scan_date: date) -> bool:
                     EXISTS (SELECT 1 FROM tushare.daily WHERE trade_date = %s),
                     EXISTS (SELECT 1 FROM tushare.adj_factor WHERE trade_date = %s)
                 """,
-                (scan_date, scan_date),
+                (trade_date, trade_date),
             )
             row = cursor.fetchone()
     return row is not None and bool(row[0]) and bool(row[1])
