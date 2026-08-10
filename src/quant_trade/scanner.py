@@ -129,6 +129,44 @@ def scan_database_latest(
     today: date | None = None,
 ) -> ScanBatch:
     """Stream recent bars for one market and evaluate each latest bar."""
+    return _scan_database(
+        settings,
+        market=market,
+        lookback_bars=lookback_bars,
+        enforce_freshness=enforce_freshness,
+        today=today,
+        scan_date=None,
+    )
+
+
+def scan_database_on_date(
+    settings: DatabaseSettings,
+    scan_date: date,
+    *,
+    market: Market = "a",
+    lookback_bars: int = 240,
+    enforce_freshness: bool = False,
+) -> ScanBatch:
+    """Stream recent bars up to one requested scan date."""
+    return _scan_database(
+        settings,
+        market=market,
+        lookback_bars=lookback_bars,
+        enforce_freshness=enforce_freshness,
+        today=None,
+        scan_date=scan_date,
+    )
+
+
+def _scan_database(
+    settings: DatabaseSettings,
+    *,
+    market: Market,
+    lookback_bars: int,
+    enforce_freshness: bool,
+    today: date | None,
+    scan_date: date | None,
+) -> ScanBatch:
     _validate_market(market)
     if lookback_bars < 90:
         raise ValueError("lookback_bars must be at least 90")
@@ -144,24 +182,35 @@ def scan_database_latest(
         status = read_market_data_status(connection, market=market, today=today)
         if enforce_freshness:
             validate_market_data_freshness(status)
-        if status.daily_latest is None:
+        if scan_date is None and status.daily_latest is None:
             source = "tushare.daily" if market == "a" else "public.stock_klines"
             raise ValueError(f"{source} contains no data")
-        scan_date = status.daily_latest
+        target_scan_date = scan_date or status.daily_latest
+        if target_scan_date is None:
+            source = "tushare.daily" if market == "a" else "public.stock_klines"
+            raise ValueError(f"{source} contains no data")
 
         matches: list[SignalMatch] = []
         scanned_symbols = 0
         stale_symbols = 0
         with connection.cursor(name="rsi50_universe_scan") as cursor:
             cursor.itersize = 10_000
-            query = _A_SHARE_SCAN_QUERY if market == "a" else _US_SHARE_SCAN_QUERY
-            cursor.execute(query, (lookback_bars,))
+            if scan_date is None:
+                query = _A_SHARE_SCAN_QUERY if market == "a" else _US_SHARE_SCAN_QUERY
+                cursor.execute(query, (lookback_bars,))
+            else:
+                query = (
+                    _A_SHARE_SCAN_ON_DATE_QUERY
+                    if market == "a"
+                    else _US_SHARE_SCAN_ON_DATE_QUERY
+                )
+                cursor.execute(query, (scan_date, lookback_bars))
             current_symbol = ""
             rows: list[tuple[Any, ...]] = []
             for row in cursor:
                 symbol = str(row[0])
                 if current_symbol and symbol != current_symbol:
-                    match, stale = _evaluate_rows(rows, scan_date, market)
+                    match, stale = _evaluate_rows(rows, target_scan_date, market)
                     scanned_symbols += 1
                     stale_symbols += int(stale)
                     if match is not None:
@@ -170,14 +219,14 @@ def scan_database_latest(
                 current_symbol = symbol
                 rows.append(tuple(row))
             if rows:
-                match, stale = _evaluate_rows(rows, scan_date, market)
+                match, stale = _evaluate_rows(rows, target_scan_date, market)
                 scanned_symbols += 1
                 stale_symbols += int(stale)
                 if match is not None:
                     matches.append(match)
 
     return ScanBatch(
-        scan_date,
+        target_scan_date,
         scanned_symbols,
         stale_symbols,
         sort_matches_by_market_cap(matches),
@@ -582,6 +631,56 @@ _A_SHARE_SCAN_QUERY = """
     ORDER BY symbol, trade_date
 """
 
+_A_SHARE_SCAN_ON_DATE_QUERY = """
+    WITH ranked AS (
+        SELECT
+            d.ts_code AS symbol,
+            d.trade_date,
+            b.name,
+            b.industry,
+            d.open AS open_raw,
+            d.high AS high_raw,
+            d.low AS low_raw,
+            d.close AS close_raw,
+            d.vol AS volume_lots,
+            a.adj_factor,
+            db.total_mv,
+            db.circ_mv,
+            first_value(a.adj_factor) OVER (
+                PARTITION BY d.ts_code ORDER BY d.trade_date DESC
+            ) AS latest_adj_factor,
+            row_number() OVER (
+                PARTITION BY d.ts_code ORDER BY d.trade_date DESC
+            ) AS recent_rank
+        FROM tushare.daily AS d
+        JOIN tushare.adj_factor AS a
+          ON a.ts_code = d.ts_code
+         AND a.trade_date = d.trade_date
+        JOIN public.stock_basic AS b ON b.ts_code = d.ts_code
+        LEFT JOIN tushare.daily_basic AS db
+          ON db.ts_code = d.ts_code
+         AND db.trade_date = d.trade_date
+        WHERE d.trade_date <= %s
+    )
+    SELECT
+        symbol,
+        trade_date,
+        name,
+        industry,
+        open_raw,
+        high_raw,
+        low_raw,
+        close_raw,
+        volume_lots,
+        adj_factor,
+        latest_adj_factor,
+        total_mv,
+        circ_mv
+    FROM ranked
+    WHERE recent_rank <= %s
+    ORDER BY symbol, trade_date
+"""
+
 _US_SHARE_SCAN_QUERY = """
     WITH ranked AS (
         SELECT
@@ -604,6 +703,63 @@ _US_SHARE_SCAN_QUERY = """
         FROM public.stock_klines AS k
         JOIN public.stock_profiles AS p ON p.code = k.code
         WHERE k.code LIKE 'US.%%'
+          AND p.market_cap > 1000000000
+    ),
+    eligible AS (
+        SELECT symbol
+        FROM ranked
+        WHERE recent_rank <= 50
+        GROUP BY symbol
+        HAVING count(close_raw * volume_lots) = 50
+           AND max(close_raw) FILTER (WHERE recent_rank = 1) > 5.0
+           AND avg(close_raw * volume_lots) > 50000000.0
+           AND percentile_cont(0.5) WITHIN GROUP (
+               ORDER BY close_raw * volume_lots
+           ) > 50000000.0
+    )
+    SELECT
+        p.symbol,
+        p.trade_date,
+        p.name,
+        p.industry,
+        p.open_raw,
+        p.high_raw,
+        p.low_raw,
+        p.close_raw,
+        p.volume_lots,
+        p.adj_factor,
+        p.latest_adj_factor,
+        p.total_mv,
+        p.circ_mv
+    FROM ranked AS p
+    JOIN eligible AS e ON e.symbol = p.symbol
+    WHERE p.recent_rank <= %s
+    ORDER BY p.symbol, p.trade_date
+"""
+
+_US_SHARE_SCAN_ON_DATE_QUERY = """
+    WITH ranked AS (
+        SELECT
+            k.code AS symbol,
+            k.kline_date AS trade_date,
+            COALESCE(p.long_name, k.code) AS name,
+            COALESCE(p.industry, '') AS industry,
+            k.open AS open_raw,
+            k.high AS high_raw,
+            k.low AS low_raw,
+            k.close AS close_raw,
+            k.volume AS volume_lots,
+            1.0 AS adj_factor,
+            p.market_cap / 10000.0 AS total_mv,
+            NULL::double precision AS circ_mv,
+            1.0 AS latest_adj_factor,
+            row_number() OVER (
+                PARTITION BY k.code ORDER BY k.kline_date DESC
+            ) AS recent_rank
+        FROM public.stock_klines AS k
+        JOIN public.stock_profiles AS p ON p.code = k.code
+        WHERE k.code LIKE 'US.%%'
+          AND k.kline_date <= %s
           AND p.market_cap > 1000000000
     ),
     eligible AS (

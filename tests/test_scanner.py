@@ -11,6 +11,8 @@ from matplotlib import pyplot as plt
 
 from quant_trade.rsi50 import Direction
 from quant_trade.scanner import (
+    _A_SHARE_SCAN_ON_DATE_QUERY,
+    _US_SHARE_SCAN_ON_DATE_QUERY,
     _US_SHARE_SCAN_QUERY,
     DataFreshnessError,
     MarketDataStatus,
@@ -148,6 +150,11 @@ def test_scan_symbol_rejects_unknown_market() -> None:
 
 def test_us_scan_query_escapes_psycopg_percent_literal() -> None:
     assert "LIKE 'US.%%'" in _US_SHARE_SCAN_QUERY
+
+
+def test_date_scan_queries_apply_requested_cutoff() -> None:
+    assert "WHERE d.trade_date <= %s" in _A_SHARE_SCAN_ON_DATE_QUERY
+    assert "AND k.kline_date <= %s" in _US_SHARE_SCAN_ON_DATE_QUERY
 
 
 def test_us_scan_query_applies_price_market_cap_and_turnover_filters() -> None:

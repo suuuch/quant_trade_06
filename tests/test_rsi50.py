@@ -91,11 +91,11 @@ def test_config_returns_directional_rsi_filter_ranges() -> None:
     assert (
         long_filter.trigger_low,
         long_filter.trigger_high,
-    ) == (50.0, 58.0)
+    ) == (50.0, 65.0)
     assert (
         short_filter.trigger_low,
         short_filter.trigger_high,
-    ) == (42.0, 50.0)
+    ) == (35.0, 50.0)
 
 
 def test_moving_average_angle_uses_recent_fifteen_bar_regression() -> None:
@@ -191,8 +191,8 @@ def test_direction_calculators_share_input_output_and_leave_filtering_outside() 
     short_direction_rsi = short_result.feature(SignalFeature.RSI_DIRECTION_RANGE)
     assert (long_latest_rsi.minimum, long_latest_rsi.maximum) == (40.0, 60.0)
     assert (short_latest_rsi.minimum, short_latest_rsi.maximum) == (40.0, 60.0)
-    assert (long_direction_rsi.minimum, long_direction_rsi.maximum) == (50.0, 58.0)
-    assert (short_direction_rsi.minimum, short_direction_rsi.maximum) == (42.0, 50.0)
+    assert (long_direction_rsi.minimum, long_direction_rsi.maximum) == (50.0, 65.0)
+    assert (short_direction_rsi.minimum, short_direction_rsi.maximum) == (35.0, 50.0)
 
     feature_calculators = (
         calculate_rsi_latest_range_feature,
@@ -207,3 +207,21 @@ def test_direction_calculators_share_input_output_and_leave_filtering_outside() 
     )
     assert {result.feature for result in feature_results} == set(SignalFeature)
     assert feature_results == long_result.features
+
+
+def test_engine_accepts_composable_feature_calculators() -> None:
+    def only_latest_rsi(inputs: SignalCalculationInput) -> FeatureCalculationResult:
+        return calculate_rsi_latest_range_feature(inputs)
+
+    engine = Rsi50SignalEngine(feature_calculators=(only_latest_rsi,))
+    start = datetime(2025, 1, 1)
+    for index, close in enumerate(_trigger_rsi_45_to_55_closes()):
+        engine.on_bar(
+            Bar(start + timedelta(days=index), close, close + 0.5, close - 0.5, close)
+        )
+
+    result = engine.calculate_current_signal(Direction.LONG)
+
+    assert result is not None
+    assert result.inputs.indicators["rsi"] == result.inputs.rsi
+    assert result.features == (only_latest_rsi(result.inputs),)

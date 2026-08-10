@@ -3,20 +3,34 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
+import re
 import time
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
 from pathlib import Path
-from typing import Literal
+from threading import Event
+from typing import Literal, TypeVar
 from zoneinfo import ZoneInfo
 
 import botpy
+import duckdb
 import psycopg
 from botpy.message import C2CMessage, GroupMessage
 
+from quant_trade.delivery_store import (
+    DeliveryImage,
+    DeliveryMetadata,
+    PreparedDelivery,
+    delivery_duckdb_path,
+    delivery_images_exist,
+    load_prepared_delivery,
+    record_delivery_send_event,
+    save_delivery_to_duckdb,
+    save_prepared_delivery,
+)
 from quant_trade.qq_bot import QQBotClient, QQBotError, QQTargetType
 from quant_trade.rsi50 import Direction, Rsi50Config
 from quant_trade.scanner import (
@@ -28,6 +42,7 @@ from quant_trade.scanner import (
     render_signal_chart,
     render_signal_sheet,
     scan_database_latest,
+    scan_database_on_date,
 )
 from quant_trade.wm_scanner import (
     WmSignalMatch,
@@ -36,24 +51,7 @@ from quant_trade.wm_scanner import (
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-
-
-@dataclass(frozen=True)
-class DeliveryImage:
-    """One combined image and the symbols displayed in it."""
-
-    path: Path
-    symbols: tuple[str, ...]
-    direction: Direction | None = None
-
-
-@dataclass(frozen=True)
-class PreparedDelivery:
-    """A completed daily scan ready for immediate QQ delivery."""
-
-    scan_date: date
-    summary: str
-    images: tuple[DeliveryImage, ...]
+RenderedMatch = TypeVar("RenderedMatch")
 
 
 @dataclass(frozen=True)
@@ -65,60 +63,24 @@ class WmCommand:
     history: bool = False
 
 
-def save_prepared_delivery(delivery: PreparedDelivery, manifest: Path) -> None:
-    """Persist a prepared scan so Supervisor restarts can send it."""
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "scan_date": delivery.scan_date.isoformat(),
-        "summary": delivery.summary,
-        "images": [
-                {
-                    "path": str(image.path.resolve()),
-                    "symbols": list(image.symbols),
-                    "direction": (
-                        None if image.direction is None else image.direction.value
-                    ),
-                }
-                for image in delivery.images
-            ],
-    }
-    temporary = manifest.with_suffix(".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(manifest)
+@dataclass(frozen=True)
+class RsiCommand:
+    """A parsed RSI delivery command with an optional target date."""
+
+    scan_date: date | None = None
 
 
-def load_prepared_delivery(manifest: Path) -> PreparedDelivery | None:
-    """Load the most recent prepared scan, returning None when unavailable."""
-    if not manifest.exists():
-        return None
-    try:
-        payload = json.loads(manifest.read_text(encoding="utf-8"))
-        images = tuple(
-            DeliveryImage(
-                path=Path(item["path"]),
-                symbols=tuple(str(symbol) for symbol in item["symbols"]),
-                direction=(
-                    None
-                    if item.get("direction") is None
-                    else Direction(str(item["direction"]))
-                ),
-            )
-            for item in payload["images"]
-        )
-        if any(not image.path.exists() for image in images):
-            return None
-        return PreparedDelivery(
-            scan_date=date.fromisoformat(payload["scan_date"]),
-            summary=str(payload["summary"]),
-            images=images,
-        )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return None
+@dataclass(frozen=True)
+class StopCommand:
+    """A command that stops active delivery tasks."""
 
 
-def delivery_images_exist(delivery: PreparedDelivery) -> bool:
-    """Return whether every image referenced by a delivery still exists."""
-    return all(image.path.exists() for image in delivery.images)
+@dataclass(frozen=True)
+class ClearCacheCommand:
+    """A command that clears prepared delivery caches."""
+
+
+QQCommand = StopCommand | ClearCacheCommand | WmCommand | RsiCommand
 
 
 def market_data_ready(status: MarketDataStatus) -> bool:
@@ -256,10 +218,17 @@ def prepare_wm_deliveries(
             f"命中 {len(selected)} 只，图片消息 {len(images)} 条。\n\n"
             f"{format_wm_conditions(pattern)}"
         )
-        delivery = PreparedDelivery(batch.scan_date, summary, images)
-        save_prepared_delivery(
+        delivery = PreparedDelivery(
+            batch.scan_date,
+            summary,
+            images,
+            DeliveryMetadata("W/M", market, pattern),
+        )
+        _persist_delivery(
             delivery,
+            output_root,
             output_root / _wm_manifest_name(market, pattern),
+            "W/M",
         )
         deliveries[pattern] = delivery
     return deliveries
@@ -270,10 +239,6 @@ def _wm_delivery_images(
     output_dir: Path,
     charts_per_message: int,
 ) -> tuple[DeliveryImage, ...]:
-    groups = [
-        rendered[start : start + charts_per_message]
-        for start in range(0, len(rendered), charts_per_message)
-    ]
     return tuple(
         DeliveryImage(
             path=render_signal_sheet(
@@ -282,12 +247,45 @@ def _wm_delivery_images(
             ),
             symbols=tuple(match.symbol for match, _ in group),
         )
-        for index, group in enumerate(groups, start=1)
+        for index, group in enumerate(
+            _chunk_rendered(rendered, charts_per_message), start=1
+        )
     )
 
 
 def _wm_manifest_name(market: str, pattern: str) -> str:
     return f"latest_wm_{market}_{pattern}.json"
+
+
+def _rsi_manifest_name(scan_date: date) -> str:
+    return f"rsi_{scan_date.isoformat()}.json"
+
+
+def parse_rsi_command(content: str) -> RsiCommand | None:
+    """Parse an RSI send command with an optional YYYY-MM-DD date."""
+    compact = "".join(content.split())
+    if "发送" not in compact:
+        return None
+    match = re.search(r"发送(\d{4}-\d{2}-\d{2})", compact)
+    if match is None:
+        return RsiCommand()
+    try:
+        return RsiCommand(date.fromisoformat(match.group(1)))
+    except ValueError:
+        return None
+
+
+def parse_qq_command(content: str) -> QQCommand | None:
+    """Parse one incoming QQ message into an atomic command."""
+    compact = "".join(content.split())
+    if "停止发送" in compact:
+        return StopCommand()
+    if "清理缓存" in compact:
+        return ClearCacheCommand()
+    wm_command = parse_wm_command(content)
+    if wm_command is not None:
+        return wm_command
+    return parse_rsi_command(content)
 
 
 def read_a_share_status(settings: DatabaseSettings, today: date) -> MarketDataStatus:
@@ -303,6 +301,56 @@ def read_a_share_status(settings: DatabaseSettings, today: date) -> MarketDataSt
         return read_market_data_status(connection, market="a", today=today)
 
 
+def read_a_share_latest_data_date(settings: DatabaseSettings) -> date | None:
+    """Read the latest A-share date with both daily and adjustment data."""
+    with psycopg.connect(
+        host=settings.host,
+        port=settings.port,
+        dbname=settings.database,
+        user=settings.user,
+        password=settings.password,
+        connect_timeout=10,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT least(
+                    (SELECT max(trade_date) FROM tushare.daily),
+                    (SELECT max(trade_date) FROM tushare.adj_factor)
+                )
+                """
+            )
+            row = cursor.fetchone()
+    if row is None or row[0] is None:
+        return None
+    if isinstance(row[0], date):
+        return row[0]
+    return datetime.fromisoformat(str(row[0])).date()
+
+
+def a_share_data_exists(settings: DatabaseSettings, scan_date: date) -> bool:
+    """Return whether both A-share source tables contain the requested date."""
+    with psycopg.connect(
+        host=settings.host,
+        port=settings.port,
+        dbname=settings.database,
+        user=settings.user,
+        password=settings.password,
+        connect_timeout=10,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    EXISTS (SELECT 1 FROM tushare.daily WHERE trade_date = %s),
+                    EXISTS (SELECT 1 FROM tushare.adj_factor WHERE trade_date = %s)
+                """,
+                (scan_date, scan_date),
+            )
+            row = cursor.fetchone()
+    return row is not None and bool(row[0]) and bool(row[1])
+
+
 def prepare_delivery(
     settings: DatabaseSettings,
     output_root: Path,
@@ -310,14 +358,24 @@ def prepare_delivery(
     lookback_bars: int,
     charts_per_message: int,
     enforce_freshness: bool = True,
+    scan_date: date | None = None,
 ) -> PreparedDelivery:
     """Run one fresh A-share scan and render all delivery images."""
-    batch = scan_database_latest(
-        settings,
-        market="a",
-        lookback_bars=lookback_bars,
-        enforce_freshness=enforce_freshness,
-    )
+    if scan_date is None:
+        batch = scan_database_latest(
+            settings,
+            market="a",
+            lookback_bars=lookback_bars,
+            enforce_freshness=enforce_freshness,
+        )
+    else:
+        batch = scan_database_on_date(
+            settings,
+            scan_date,
+            market="a",
+            lookback_bars=lookback_bars,
+            enforce_freshness=enforce_freshness,
+        )
     output_dir = output_root / batch.scan_date.isoformat()
     rendered = [
         (
@@ -341,9 +399,45 @@ def prepare_delivery(
         f"图片消息 {len(images)} 条。\n\n"
         f"{format_filter_conditions()}"
     )
-    delivery = PreparedDelivery(batch.scan_date, summary, images)
-    save_prepared_delivery(delivery, output_root / "latest_delivery.json")
+    delivery = PreparedDelivery(
+        batch.scan_date,
+        summary,
+        images,
+        DeliveryMetadata("RSI 顺势交易", "a"),
+    )
+    _persist_delivery(
+        delivery,
+        output_root,
+        output_root / _rsi_manifest_name(batch.scan_date),
+        "RSI",
+    )
+    if scan_date is None:
+        save_prepared_delivery(delivery, output_root / "latest_delivery.json")
     return delivery
+
+
+def _persist_delivery(
+    delivery: PreparedDelivery,
+    output_root: Path,
+    manifest_path: Path,
+    log_label: str,
+) -> None:
+    save_prepared_delivery(delivery, manifest_path)
+    try:
+        save_delivery_to_duckdb(
+            delivery,
+            delivery_duckdb_path(output_root),
+            manifest_path=manifest_path,
+        )
+    except (duckdb.Error, OSError, ValueError) as error:
+        print(f"DuckDB 写入 {log_label} 发送缓存失败：{error}", flush=True)
+
+
+def _chunk_rendered(
+    rendered: Sequence[tuple[RenderedMatch, Path]],
+    size: int,
+) -> list[Sequence[tuple[RenderedMatch, Path]]]:
+    return [rendered[start : start + size] for start in range(0, len(rendered), size)]
 
 
 def _rsi_delivery_images(
@@ -357,23 +451,19 @@ def _rsi_delivery_images(
         direction_rendered = [
             item for item in rendered if item[0].signal.direction is direction
         ]
-        groups = [
-            direction_rendered[start : start + charts_per_message]
-            for start in range(0, len(direction_rendered), charts_per_message)
-        ]
         images.extend(
             DeliveryImage(
                 path=render_signal_sheet(
                     [path for _, path in group],
-                    output_dir
-                    / "batches"
-                    / direction.value
-                    / f"batch_{index:03d}.png",
+                    output_dir / "batches" / direction.value / f"batch_{index:03d}.png",
                 ),
                 symbols=tuple(match.symbol for match, _ in group),
                 direction=direction,
             )
-            for index, group in enumerate(groups, start=1)
+            for index, group in enumerate(
+                _chunk_rendered(direction_rendered, charts_per_message),
+                start=1,
+            )
         )
     return tuple(images)
 
@@ -402,6 +492,9 @@ class QQSignalService(botpy.Client):
         self.charts_per_message = charts_per_message
         self.manifest = output_root / "latest_delivery.json"
         self.prepared = load_prepared_delivery(self.manifest)
+        self.prepared_by_date: dict[date, PreparedDelivery] = {}
+        if self.prepared is not None:
+            self.prepared_by_date[self.prepared.scan_date] = self.prepared
         self.c2c_openid = os.getenv("QQBOT_OPENID")
         self.wm_prepared = {
             (market, pattern): delivery
@@ -418,6 +511,7 @@ class QQSignalService(botpy.Client):
         self.wm_preparing: set[str] = set()
         self._scheduler_task: asyncio.Task[None] | None = None
         self._delivery_lock = asyncio.Lock()
+        self._delivery_tasks: dict[asyncio.Task[None], Event] = {}
 
     async def on_ready(self) -> None:
         """Start the daily data-check scheduler after QQ connects."""
@@ -465,30 +559,92 @@ class QQSignalService(botpy.Client):
         msg_id: str,
         content: str,
     ) -> None:
-        wm_command = parse_wm_command(content)
-        if wm_command is not None:
-            await self._handle_wm_command(
+        command = parse_qq_command(content)
+        if command is None:
+            return
+        if isinstance(command, StopCommand):
+            await self._handle_stop_command(target_type, target_id, msg_id)
+        elif isinstance(command, ClearCacheCommand):
+            await self._handle_clear_cache_command(target_type, target_id, msg_id)
+        elif isinstance(command, WmCommand):
+            await self._handle_wm_command(target_type, target_id, msg_id, command)
+        else:
+            await self._handle_rsi_command(target_type, target_id, msg_id, command)
+
+    async def _handle_stop_command(
+        self,
+        target_type: QQTargetType,
+        target_id: str,
+        msg_id: str,
+    ) -> None:
+        self._stop_delivery_tasks()
+        await asyncio.to_thread(
+            self._reply_status,
+            target_type,
+            target_id,
+            msg_id,
+            "已收到停止发送命令，正在终止当前发送任务。",
+        )
+
+    async def _handle_clear_cache_command(
+        self,
+        target_type: QQTargetType,
+        target_id: str,
+        msg_id: str,
+    ) -> None:
+        self._stop_delivery_tasks()
+        self._clear_delivery_cache()
+        await asyncio.to_thread(
+            self._reply_status,
+            target_type,
+            target_id,
+            msg_id,
+            "缓存已清理；下次发送将重新扫描并生成图片。",
+        )
+
+    async def _handle_rsi_command(
+        self,
+        target_type: QQTargetType,
+        target_id: str,
+        msg_id: str,
+        command: RsiCommand,
+    ) -> None:
+        target_date = await asyncio.to_thread(
+            self._resolve_rsi_target_date,
+            command.scan_date,
+        )
+        if target_date is None:
+            await asyncio.to_thread(
+                self._reply_status,
                 target_type,
                 target_id,
                 msg_id,
-                wm_command,
+                "数据库中没有可发送的 A股 RSI 数据。",
             )
             return
-        send_history = "发送历史" in content
-        if not send_history and "发送" not in content:
+        if not await asyncio.to_thread(a_share_data_exists, self.settings, target_date):
+            await asyncio.to_thread(
+                self._reply_status,
+                target_type,
+                target_id,
+                msg_id,
+                f"数据库中没有 {target_date:%Y-%m-%d} 的完整 A股日线和复权数据。",
+            )
             return
-        command = "发送历史" if send_history else "发送"
-        cache_date = self.prepared.scan_date if self.prepared is not None else "无"
-        print(f"收到命令：{command}；当前缓存日期：{cache_date}。", flush=True)
-        prepared = self.prepared
+        command_label = f"发送{target_date:%Y-%m-%d}"
+        prepared = self._load_rsi_delivery(target_date)
+        cache_date = prepared.scan_date if prepared is not None else "无"
+        print(f"收到命令：{command_label}；当前缓存日期：{cache_date}。", flush=True)
         if prepared is not None and not delivery_images_exist(prepared):
             print(
-                f"{prepared.scan_date} 历史缓存图片缺失，清空缓存并重新准备。",
+                f"{prepared.scan_date} RSI 缓存图片缺失，清空缓存并重新准备。",
                 flush=True,
             )
-            self.prepared = None
+            self.prepared_by_date.pop(prepared.scan_date, None)
+            if self.prepared is prepared:
+                self.prepared = None
             prepared = None
-        if self.preparing and not (send_history and prepared is not None):
+        if self.preparing and prepared is None:
             await asyncio.to_thread(
                 self._reply_status,
                 target_type,
@@ -497,14 +653,14 @@ class QQSignalService(botpy.Client):
                 "今日数据已齐，扫描和绘图正在进行，请稍后再次发送。",
             )
             return
-        if send_history and prepared is None:
+        if prepared is None:
             if self._delivery_lock.locked():
                 await asyncio.to_thread(
                     self._reply_status,
                     target_type,
                     target_id,
                     msg_id,
-                    "历史扫描正在准备，请稍后再试。",
+                    "已有一批信号正在扫描或发送，请稍后再试。",
                 )
                 return
             await asyncio.to_thread(
@@ -512,23 +668,16 @@ class QQSignalService(botpy.Client):
                 target_type,
                 target_id,
                 msg_id,
-                "未找到历史缓存，开始按数据库最后交易日扫描，完成后发送。",
+                f"{target_date:%Y-%m-%d} 未找到缓存，开始扫描并生成图片。",
             )
-            asyncio.create_task(
-                self._prepare_history_and_deliver(
+            self._start_delivery_task(
+                lambda stop_event: self._prepare_rsi_and_deliver(
                     target_type,
                     target_id,
                     msg_id,
+                    target_date,
+                    stop_event,
                 )
-            )
-            return
-        if prepared is None:
-            await asyncio.to_thread(
-                self._reply_status,
-                target_type,
-                target_id,
-                msg_id,
-                "今日扫描尚未完成；交易日 18:00 后将在数据到齐时自动扫描。",
             )
             return
         if self._delivery_lock.locked():
@@ -540,7 +689,78 @@ class QQSignalService(botpy.Client):
                 "已有一批信号正在发送，请稍后再试。",
             )
             return
-        asyncio.create_task(self._deliver(target_type, target_id, msg_id, prepared))
+        self._start_delivery_task(
+            lambda stop_event: self._deliver(
+                target_type,
+                target_id,
+                msg_id,
+                prepared,
+                stop_event,
+            )
+        )
+
+    def _resolve_rsi_target_date(self, requested_date: date | None) -> date | None:
+        if requested_date is not None:
+            return requested_date
+        return read_a_share_latest_data_date(self.settings)
+
+    def _load_rsi_delivery(self, scan_date: date) -> PreparedDelivery | None:
+        prepared = self.prepared_by_date.get(scan_date)
+        if prepared is not None:
+            return prepared
+        prepared = load_prepared_delivery(
+            self.output_root / _rsi_manifest_name(scan_date)
+        )
+        if prepared is None:
+            return None
+        self.prepared_by_date[prepared.scan_date] = prepared
+        if self.prepared is None or self.prepared.scan_date <= prepared.scan_date:
+            self.prepared = prepared
+        return prepared
+
+    def _clear_delivery_cache(self) -> None:
+        manifests = [
+            self.manifest,
+            *self.output_root.glob("rsi_*.json"),
+            *self.output_root.glob("latest_wm_*.json"),
+        ]
+        failed: list[Path] = []
+        for manifest in manifests:
+            try:
+                manifest.unlink(missing_ok=True)
+            except OSError as error:
+                failed.append(manifest)
+                print(f"清理缓存文件失败 {manifest}: {error}", flush=True)
+        if failed:
+            print("部分缓存文件未删除，重启后可能仍会加载残留缓存。", flush=True)
+        self.prepared = None
+        self.prepared_by_date.clear()
+        self.wm_prepared.clear()
+
+    def _stop_delivery_tasks(self) -> None:
+        for task, stop_event in tuple(self._delivery_tasks.items()):
+            stop_event.set()
+            if not task.done():
+                task.cancel()
+
+    def _start_delivery_task(
+        self,
+        task_factory: Callable[[Event], Coroutine[object, object, None]],
+    ) -> None:
+        stop_event = Event()
+        task = asyncio.create_task(task_factory(stop_event))
+        self._delivery_tasks[task] = stop_event
+
+        def discard(done: asyncio.Task[None]) -> None:
+            self._delivery_tasks.pop(done, None)
+            if done.cancelled():
+                return
+            try:
+                done.exception()
+            except asyncio.CancelledError:
+                return
+
+        task.add_done_callback(discard)
 
     async def _handle_wm_command(
         self,
@@ -559,7 +779,15 @@ class QQSignalService(botpy.Client):
             flush=True,
         )
         if prepared is not None:
-            asyncio.create_task(self._deliver(target_type, target_id, msg_id, prepared))
+            self._start_delivery_task(
+                lambda stop_event: self._deliver(
+                    target_type,
+                    target_id,
+                    msg_id,
+                    prepared,
+                    stop_event,
+                )
+            )
             return
         if command.market in self.wm_preparing:
             await asyncio.to_thread(
@@ -570,24 +798,27 @@ class QQSignalService(botpy.Client):
                 f"{market_label} W/M 正在扫描和绘图，请稍后再次发送。",
             )
             return
-        asyncio.create_task(
-            self._prepare_wm_and_deliver(
+        self._start_delivery_task(
+            lambda stop_event: self._prepare_wm_and_deliver(
                 target_type,
                 target_id,
                 msg_id,
                 command,
+                stop_event,
             )
         )
 
-    async def _prepare_history_and_deliver(
+    async def _prepare_rsi_and_deliver(
         self,
         target_type: QQTargetType,
         target_id: str,
         msg_id: str,
+        scan_date: date,
+        stop_event: Event,
     ) -> None:
         async with self._delivery_lock:
             try:
-                print("未找到历史缓存，按数据库最后交易日开始扫描。", flush=True)
+                print(f"未找到 {scan_date:%Y-%m-%d} 缓存，开始 RSI 扫描。", flush=True)
                 prepared = await asyncio.to_thread(
                     prepare_delivery,
                     self.settings,
@@ -595,23 +826,30 @@ class QQSignalService(botpy.Client):
                     lookback_bars=self.lookback_bars,
                     charts_per_message=self.charts_per_message,
                     enforce_freshness=False,
+                    scan_date=scan_date,
                 )
+                if stop_event.is_set():
+                    print("RSI 扫描完成，但发送已停止。", flush=True)
+                    return
                 self.prepared = prepared
+                self.prepared_by_date[prepared.scan_date] = prepared
                 await asyncio.to_thread(
                     self._deliver_sync,
                     target_type,
                     target_id,
                     msg_id,
                     prepared,
+                    stop_event,
+                    2,
                 )
             except (QQBotError, OSError, TypeError, ValueError) as error:
-                print(f"历史扫描或发送失败：{error}", flush=True)
+                print(f"RSI 扫描或发送失败：{error}", flush=True)
                 await asyncio.to_thread(
                     self._reply_status,
                     target_type,
                     target_id,
                     msg_id,
-                    f"历史扫描或发送失败：{error}",
+                    f"RSI 扫描或发送失败：{error}",
                 )
 
     async def _prepare_wm_and_deliver(
@@ -620,6 +858,7 @@ class QQSignalService(botpy.Client):
         target_id: str,
         msg_id: str,
         command: WmCommand,
+        stop_event: Event,
     ) -> None:
         async with self._delivery_lock:
             await self._prepare_wm_and_deliver_locked(
@@ -627,6 +866,7 @@ class QQSignalService(botpy.Client):
                 target_id,
                 msg_id,
                 command,
+                stop_event,
             )
 
     async def _prepare_wm_and_deliver_locked(
@@ -635,6 +875,7 @@ class QQSignalService(botpy.Client):
         target_id: str,
         msg_id: str,
         command: WmCommand,
+        stop_event: Event,
     ) -> None:
         market = command.market
         self.wm_preparing.add(market)
@@ -661,16 +902,27 @@ class QQSignalService(botpy.Client):
                     for pattern, delivery in deliveries.items()
                 }
             )
+            if stop_event.is_set():
+                print("W/M 扫描完成，但发送已停止。", flush=True)
+                return
             await asyncio.to_thread(
                 self._deliver_sync,
                 target_type,
                 target_id,
                 msg_id,
                 deliveries[command.pattern],
+                stop_event,
                 2,
             )
         except (QQBotError, OSError, TypeError, ValueError) as error:
             print(f"W/M 扫描或发送失败：{error}", flush=True)
+            await asyncio.to_thread(
+                self._reply_status,
+                target_type,
+                target_id,
+                msg_id,
+                f"W/M 扫描或发送失败：{error}",
+            )
         finally:
             self.wm_preparing.discard(market)
 
@@ -723,6 +975,7 @@ class QQSignalService(botpy.Client):
                         lookback_bars=self.lookback_bars,
                         charts_per_message=self.charts_per_message,
                     )
+                    self.prepared_by_date[self.prepared.scan_date] = self.prepared
                     print(
                         f"{self.prepared.scan_date} RSI 顺势交易扫描完成。",
                         flush=True,
@@ -763,6 +1016,7 @@ class QQSignalService(botpy.Client):
         target_id: str,
         msg_id: str,
         prepared: PreparedDelivery,
+        stop_event: Event,
     ) -> None:
         async with self._delivery_lock:
             try:
@@ -772,10 +1026,18 @@ class QQSignalService(botpy.Client):
                     target_id,
                     msg_id,
                     prepared,
-                    2,
+                    stop_event,
+                    1,
                 )
             except (QQBotError, OSError, TypeError, ValueError) as error:
                 print(f"QQ 批量发送失败：{error}", flush=True)
+                self._record_send_event(
+                    prepared,
+                    target_type,
+                    target_id,
+                    "failed",
+                    str(error),
+                )
 
     def _deliver_sync(
         self,
@@ -783,12 +1045,28 @@ class QQSignalService(botpy.Client):
         target_id: str,
         msg_id: str,
         prepared: PreparedDelivery,
+        stop_event: Event,
         first_msg_seq: int = 1,
     ) -> None:
         print(
             f"开始发送 {prepared.scan_date} 扫描结果："
             f"{len(prepared.images)} 条图片消息。",
             flush=True,
+        )
+        if stop_event.is_set():
+            self._record_send_event(
+                prepared,
+                target_type,
+                target_id,
+                "stopped",
+                "stopped before summary",
+            )
+            return
+        self._record_send_event(
+            prepared,
+            target_type,
+            target_id,
+            "started",
         )
         client = QQBotClient()
         client.send_text(
@@ -801,16 +1079,38 @@ class QQSignalService(botpy.Client):
         print("QQ 筛选条件和扫描汇总已发送。", flush=True)
         total = len(prepared.images)
         for index, image in enumerate(prepared.images, start=1):
+            if stop_event.is_set():
+                print("发送已停止，剩余图片不再发送。", flush=True)
+                self._record_send_event(
+                    prepared,
+                    target_type,
+                    target_id,
+                    "stopped",
+                    f"stopped before image {index}/{total}",
+                )
+                return
             if self.send_delay:
                 time.sleep(self.send_delay)
-            direction_label = _delivery_direction_label(image.direction)
+            if stop_event.is_set():
+                print("发送已停止，剩余图片不再发送。", flush=True)
+                self._record_send_event(
+                    prepared,
+                    target_type,
+                    target_id,
+                    "stopped",
+                    f"stopped before image {index}/{total}",
+                )
+                return
+            direction_label = _delivery_direction_label(
+                image.direction,
+                prepared.metadata.strategy,
+            )
             client.send_image(
                 target_type,
                 target_id,
                 image.path,
                 content=(
-                    f"{direction_label}信号 {index}/{total}\n"
-                    f"{'、'.join(image.symbols)}"
+                    f"{direction_label}信号 {index}/{total}\n{'、'.join(image.symbols)}"
                 ),
                 msg_id=msg_id,
                 msg_seq=first_msg_seq + index,
@@ -820,6 +1120,33 @@ class QQSignalService(botpy.Client):
                 flush=True,
             )
         print(f"{prepared.scan_date} QQ 批量发送完成。", flush=True)
+        self._record_send_event(
+            prepared,
+            target_type,
+            target_id,
+            "completed",
+        )
+
+    def _record_send_event(
+        self,
+        prepared: PreparedDelivery,
+        target_type: QQTargetType,
+        target_id: str,
+        status: str,
+        detail: str = "",
+    ) -> None:
+        try:
+            record_delivery_send_event(
+                delivery_duckdb_path(self.output_root),
+                metadata=prepared.metadata,
+                scan_date=prepared.scan_date,
+                target_type=target_type,
+                target_id=target_id,
+                status=status,
+                detail=detail,
+            )
+        except (duckdb.Error, OSError, ValueError) as error:
+            print(f"DuckDB 写入 QQ 发送事件失败：{error}", flush=True)
 
     @staticmethod
     def _reply_status(
@@ -837,8 +1164,10 @@ class QQSignalService(botpy.Client):
         )
 
 
-def _delivery_direction_label(direction: Direction | None) -> str:
+def _delivery_direction_label(direction: Direction | None, strategy: str) -> str:
     """Return a QQ message prefix for one delivery image direction."""
+    if strategy == "W/M":
+        return "W/M"
     if direction is Direction.LONG:
         return "RSI 顺势交易多头"
     if direction is Direction.SHORT:

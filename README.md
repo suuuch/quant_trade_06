@@ -139,8 +139,10 @@ uv run python scripts/scan_rsi50_to_qq.py --help
 常驻服务同时负责交易日扫描和 QQ 群指令监听：
 
 ```bash
-uv run python scripts/run_a_share_qq_service.py
+uv run python scripts/run_qq_signal_listener.py
 ```
+
+`scripts/run_a_share_qq_service.py` 仍保留为兼容入口，内部会调用同一个监听服务。
 
 默认行为：
 
@@ -148,7 +150,10 @@ uv run python scripts/run_a_share_qq_service.py
 - 非交易日跳过当天检查；
 - 交易日每 5 分钟检查一次 `tushare.daily` 和 `tushare.adj_factor`；
 - 两张表的最新日期都等于当天后，自动扫描并生成全部图片；
-- 扫描结果写入 `reports/qq_signals/latest_delivery.json`，重启后可继续使用；
+- RSI 扫描结果写入 `reports/qq_signals/rsi_<日期>.json`，最新日兼容写入
+  `reports/qq_signals/latest_delivery.json`；
+- W/M 扫描结果写入独立的 `latest_wm_<市场>_<形态>.json`；
+- 发送缓存和发送事件同时记录到 `reports/qq_signals/qq_delivery.duckdb`；
 - 服务只准备结果，不会在扫描完成后主动刷屏，等待群内指令发送；
 - 每条图片消息之间默认等待 10 秒。
 
@@ -157,9 +162,14 @@ QQ 群指令需要 `@机器人`。`QQBOT_OPENID` 对应的单聊可以直接发�
 
 RSI 顺势交易指令：
 
-- `发送`：发送当前已经准备好的扫描结果；当天尚未完成扫描时返回状态；
-- `发送历史`：发送缓存中的最后交易日结果，不检查今天是否为交易日；若没有
-  缓存，则扫描数据库最后交易日并发送。
+- `发送`：读取数据库中 A 股最新完整日线和复权日期，发送这一天的 RSI 顺势
+  交易结果；若没有缓存，会先扫描、生成图片、写缓存，再发送；
+- `发送2026-07-25`：发送指定日期的 RSI 顺势交易结果。发送前会检查
+  `tushare.daily` 和 `tushare.adj_factor` 是否都有该日期数据；
+- `清理缓存`：删除 RSI/W/M 的 manifest 缓存并清空内存缓存。下次发送会重新
+  扫描并生成图片。DuckDB 历史记录会保留；
+- `停止发送`：终止当前发送任务。已经发出的消息无法撤回，正在进行中的单条
+  QQ 请求不会被硬中断，但后续图片会停止发送。
 
 独立 W/M 指令：
 
@@ -172,8 +182,8 @@ RSI 顺势交易指令：
 | `发送美股M顶` | 美股 M 顶入场信号 |
 | `发送美股WM` | 美股全部 W/M 入场信号 |
 
-在任一 W/M 命令中加入 `历史`，会发送数据库最后交易日的缓存，不检查今天
-是否为交易日或今天的数据是否已经到齐。例如：
+在任一 W/M 命令中加入 `历史`，会按数据库最后交易日扫描或发送缓存，不检查
+今天是否为交易日或今天的数据是否已经到齐。例如：
 
 ```text
 发送历史A股W底
@@ -193,7 +203,30 @@ RSI 顺势交易指令：
 服务参数：
 
 ```bash
-uv run python scripts/run_a_share_qq_service.py --help
+uv run python scripts/run_qq_signal_listener.py --help
+```
+
+### QQ 发送记录 DuckDB
+
+常驻服务会在 `reports/qq_signals/qq_delivery.duckdb` 中维护三张表：
+
+- `deliveries`：每个策略、市场、形态和日期的发送缓存摘要；
+- `delivery_images`：每张合图的路径、股票列表和方向；
+- `delivery_send_events`：每次发送的 `started`、`completed`、`stopped`、
+  `failed` 事件。
+
+示例查询：
+
+```bash
+uv run python - <<'PY'
+import duckdb
+
+with duckdb.connect("reports/qq_signals/qq_delivery.duckdb") as con:
+    print(con.execute(
+        "select strategy, market, pattern, scan_date, image_count "
+        "from deliveries order by updated_at desc limit 10"
+    ).fetchall())
+PY
 ```
 
 ## Supervisor 部署

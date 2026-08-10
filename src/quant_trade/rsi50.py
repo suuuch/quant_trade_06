@@ -1,6 +1,6 @@
 """Bar-by-bar signal engine for the daily RSI trend-following strategy."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -148,6 +148,18 @@ class SignalCalculationInput:
     fast_ma_angle: float | None
     rsi_history: tuple[float | None, ...]
 
+    @property
+    def indicators(self) -> Mapping[str, object]:
+        """Return feature inputs through a stable indicator mapping."""
+        return {
+            "rsi": self.rsi,
+            "atr": self.atr,
+            "fast_ma": self.fast_ma,
+            "previous_fast_ma": self.previous_fast_ma,
+            "fast_ma_angle": self.fast_ma_angle,
+            "rsi_history": self.rsi_history,
+        }
+
 
 class SignalFeature(StrEnum):
     """Features evaluated for every directional signal candidate."""
@@ -167,6 +179,10 @@ class FeatureCalculationResult:
     observed_index: int | None = None
     minimum: float | None = None
     maximum: float | None = None
+    details: Mapping[str, object] | None = None
+
+
+FeatureCalculator = Callable[[SignalCalculationInput], FeatureCalculationResult]
 
 
 @dataclass(frozen=True)
@@ -267,48 +283,60 @@ def calculate_rsi_trigger_feature(
         observed=inputs.rsi,
         minimum=rsi_filter.trigger_low,
         maximum=rsi_filter.trigger_high,
+        details={"days": inputs.config.recent_rsi_days},
     )
+
+
+DEFAULT_SIGNAL_FEATURES: tuple[FeatureCalculator, ...] = (
+    calculate_rsi_latest_range_feature,
+    calculate_fast_ma_feature,
+    calculate_rsi_trigger_feature,
+)
 
 
 def _calculate_signal_features(
     inputs: SignalCalculationInput,
+    feature_calculators: Sequence[FeatureCalculator] = DEFAULT_SIGNAL_FEATURES,
 ) -> tuple[FeatureCalculationResult, ...]:
-    return (
-        calculate_rsi_latest_range_feature(inputs),
-        calculate_fast_ma_feature(inputs),
-        calculate_rsi_trigger_feature(inputs),
-    )
+    return tuple(calculator(inputs) for calculator in feature_calculators)
 
 
 def calculate_long_signal(
     inputs: SignalCalculationInput,
+    feature_calculators: Sequence[FeatureCalculator] = DEFAULT_SIGNAL_FEATURES,
 ) -> SignalCalculationResult:
     """Calculate all long conditions without filtering or mutating engine state."""
     if inputs.direction is not Direction.LONG:
         raise ValueError("long signal calculation requires long direction")
     return SignalCalculationResult(
         inputs=inputs,
-        features=_calculate_signal_features(inputs),
+        features=_calculate_signal_features(inputs, feature_calculators),
     )
 
 
 def calculate_short_signal(
     inputs: SignalCalculationInput,
+    feature_calculators: Sequence[FeatureCalculator] = DEFAULT_SIGNAL_FEATURES,
 ) -> SignalCalculationResult:
     """Calculate all short conditions without filtering or mutating engine state."""
     if inputs.direction is not Direction.SHORT:
         raise ValueError("short signal calculation requires short direction")
     return SignalCalculationResult(
         inputs=inputs,
-        features=_calculate_signal_features(inputs),
+        features=_calculate_signal_features(inputs, feature_calculators),
     )
 
 
 class Rsi50SignalEngine:
     """Evaluate the strategy incrementally without looking ahead."""
 
-    def __init__(self, config: Rsi50Config | None = None) -> None:
+    def __init__(
+        self,
+        config: Rsi50Config | None = None,
+        feature_calculators: Sequence[FeatureCalculator] = DEFAULT_SIGNAL_FEATURES,
+    ) -> None:
         self.config = config or Rsi50Config()
+        self.feature_calculators = tuple(feature_calculators)
         self.bars: list[Bar] = []
         self.rsi_values: list[float | None] = []
         self.atr_values: list[float | None] = []
@@ -420,8 +448,8 @@ class Rsi50SignalEngine:
         if inputs is None:
             return None
         if direction is Direction.LONG:
-            return calculate_long_signal(inputs)
-        return calculate_short_signal(inputs)
+            return calculate_long_signal(inputs, self.feature_calculators)
+        return calculate_short_signal(inputs, self.feature_calculators)
 
     def _calculation_inputs(
         self,
@@ -434,12 +462,7 @@ class Rsi50SignalEngine:
         atr = self.atr_values[current]
         fast = self.fast_ma_values[current]
         previous_fast = self.fast_ma_values[current - 1]
-        if (
-            rsi is None
-            or atr is None
-            or fast is None
-            or previous_fast is None
-        ):
+        if rsi is None or atr is None or fast is None or previous_fast is None:
             return None
         return SignalCalculationInput(
             config=self.config,

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A-share quantitative trading strategy — M-top short / W-bottom long / RSI trend following"
 requires-python = ">=3.11"
 dependencies = [
+    "duckdb>=1.5.5",
     "matplotlib>=3.11.1",
     "numpy>=2.4.6",
     "pandas>=3.0.5",

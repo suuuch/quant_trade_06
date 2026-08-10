@@ -206,10 +206,7 @@ def _direction_delivery_images(
                 group,
                 render_signal_sheet(
                     [image_path for _, image_path in group],
-                    output_dir
-                    / "batches"
-                    / direction.value
-                    / f"batch_{index:03d}.png",
+                    output_dir / "batches" / direction.value / f"batch_{index:03d}.png",
                 ),
             )
             for index, group in enumerate(groups, start=1)
