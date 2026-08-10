@@ -69,6 +69,14 @@ def test_filter_conditions_include_current_a_share_rules() -> None:
     assert "MA30" not in text
 
 
+def test_filter_conditions_describe_us_share_ma_direction() -> None:
+    text = format_filter_conditions(market="us")
+
+    assert "多头：最近 5 天 RSI 全部位于 50–58；MA20 向上" in text
+    assert "空头：最近 5 天 RSI 全部位于 42–50；MA20 向下" in text
+    assert "20°" not in text
+
+
 @pytest.mark.parametrize(
     ("content", "market", "pattern", "history"),
     [
@@ -102,13 +110,23 @@ def test_rsi_command_accepts_optional_target_date() -> None:
     default_command = parse_rsi_command("发送")
     dated_command = parse_rsi_command("发送2026-07-25")
     spaced_command = parse_rsi_command("发送 2026-07-25")
+    us_command = parse_rsi_command("发送美股")
+    us_dated_command = parse_rsi_command("发送美股2026-07-25")
 
     assert default_command is not None
+    assert default_command.market == "a"
     assert default_command.scan_date is None
     assert dated_command is not None
+    assert dated_command.market == "a"
     assert dated_command.scan_date == date(2026, 7, 25)
     assert spaced_command is not None
     assert spaced_command.scan_date == date(2026, 7, 25)
+    assert us_command is not None
+    assert us_command.market == "us"
+    assert us_command.scan_date is None
+    assert us_dated_command is not None
+    assert us_dated_command.market == "us"
+    assert us_dated_command.scan_date == date(2026, 7, 25)
 
 
 def test_qq_command_parser_returns_atomic_command_types() -> None:

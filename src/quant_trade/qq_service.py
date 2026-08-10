@@ -67,6 +67,7 @@ class WmCommand:
 class RsiCommand:
     """A parsed RSI delivery command with an optional target date."""
 
+    market: Market = "a"
     scan_date: date | None = None
 
 
@@ -103,29 +104,43 @@ def seconds_until_check(
     return max(1.0, (target - now).total_seconds())
 
 
-def format_filter_conditions(direction: str = "both") -> str:
-    """Describe the active A-share strategy conditions for a QQ summary."""
-    config = Rsi50Config()
+def _market_label(market: Market) -> str:
+    return "美股" if market == "us" else "A股"
+
+
+def format_filter_conditions(direction: str = "both", market: Market = "a") -> str:
+    """Describe the active strategy conditions for a QQ summary."""
+    config = (
+        Rsi50Config(ma_fast_min_angle_degrees=None) if market == "us" else Rsi50Config()
+    )
     common = (
         f"共同：最新一天 RSI({config.rsi_period}) 位于 "
         f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
+    if config.ma_fast_min_angle_degrees is None:
+        long_ma = "MA20 向上"
+        short_ma = "MA20 向下"
+    else:
+        long_ma = (
+            f"MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 > "
+            f"{config.ma_fast_min_angle_degrees:g}°"
+        )
+        short_ma = (
+            f"MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 < "
+            f"-{config.ma_fast_min_angle_degrees:g}°"
+        )
     lines = ["RSI 顺势交易筛选条件（日线）：", common]
     if direction in {"long", "both"}:
         rsi_filter = config.rsi_filter_for(Direction.LONG)
         lines.append(
             f"多头：最近 {config.recent_rsi_days} 天 RSI 全部位于 "
-            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；MA20 最近 "
-            f"{config.ma_fast_angle_bars} Bar 拟合角度 > "
-            f"{config.ma_fast_min_angle_degrees:g}°。"
+            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；{long_ma}。"
         )
     if direction in {"short", "both"}:
         rsi_filter = config.rsi_filter_for(Direction.SHORT)
         lines.append(
             f"空头：最近 {config.recent_rsi_days} 天 RSI 全部位于 "
-            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；MA20 最近 "
-            f"{config.ma_fast_angle_bars} Bar 拟合角度 < "
-            f"-{config.ma_fast_min_angle_degrees:g}°。"
+            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；{short_ma}。"
         )
     return "\n".join(lines)
 
@@ -257,8 +272,13 @@ def _wm_manifest_name(market: str, pattern: str) -> str:
     return f"latest_wm_{market}_{pattern}.json"
 
 
-def _rsi_manifest_name(scan_date: date) -> str:
-    return f"rsi_{scan_date.isoformat()}.json"
+def _rsi_manifest_name(market: Market, scan_date: date) -> str:
+    prefix = "rsi" if market == "a" else f"rsi_{market}"
+    return f"{prefix}_{scan_date.isoformat()}.json"
+
+
+def _latest_rsi_manifest_name(market: Market) -> str:
+    return "latest_delivery.json" if market == "a" else f"latest_delivery_{market}.json"
 
 
 def parse_rsi_command(content: str) -> RsiCommand | None:
@@ -266,11 +286,14 @@ def parse_rsi_command(content: str) -> RsiCommand | None:
     compact = "".join(content.split())
     if "发送" not in compact:
         return None
+    market: Market = "us" if "美股" in compact else "a"
     match = re.search(r"发送(\d{4}-\d{2}-\d{2})", compact)
     if match is None:
-        return RsiCommand()
+        match = re.search(r"(\d{4}-\d{2}-\d{2})", compact)
+    if match is None:
+        return RsiCommand(market)
     try:
-        return RsiCommand(date.fromisoformat(match.group(1)))
+        return RsiCommand(market, date.fromisoformat(match.group(1)))
     except ValueError:
         return None
 
@@ -331,6 +354,26 @@ def read_a_share_latest_data_date(settings: DatabaseSettings) -> date | None:
     return datetime.fromisoformat(value).date()
 
 
+def read_us_share_latest_data_date(settings: DatabaseSettings) -> date | None:
+    """Read the latest US-share daily data date."""
+    with psycopg.connect(
+        host=settings.host,
+        port=settings.port,
+        dbname=settings.database,
+        user=settings.user,
+        password=settings.password,
+        connect_timeout=10,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT max(kline_date) FROM public.stock_klines")
+            row = cursor.fetchone()
+    if row is None or row[0] is None:
+        return None
+    if isinstance(row[0], date):
+        return row[0]
+    return datetime.fromisoformat(str(row[0])).date()
+
+
 def a_share_data_exists(settings: DatabaseSettings, scan_date: date) -> bool:
     """Return whether both A-share source tables contain the requested date."""
     trade_date = scan_date.strftime("%Y%m%d")
@@ -355,20 +398,46 @@ def a_share_data_exists(settings: DatabaseSettings, scan_date: date) -> bool:
     return row is not None and bool(row[0]) and bool(row[1])
 
 
+def market_data_exists(settings: DatabaseSettings, market: Market, scan_date: date) -> bool:
+    """Return whether the requested market contains the scan date."""
+    if market == "a":
+        return a_share_data_exists(settings, scan_date)
+    with psycopg.connect(
+        host=settings.host,
+        port=settings.port,
+        dbname=settings.database,
+        user=settings.user,
+        password=settings.password,
+        connect_timeout=10,
+    ) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM public.stock_klines WHERE kline_date = %s
+                )
+                """,
+                (scan_date,),
+            )
+            row = cursor.fetchone()
+    return row is not None and bool(row[0])
+
+
 def prepare_delivery(
     settings: DatabaseSettings,
     output_root: Path,
     *,
+    market: Market = "a",
     lookback_bars: int,
     charts_per_message: int,
     enforce_freshness: bool = True,
     scan_date: date | None = None,
 ) -> PreparedDelivery:
-    """Run one fresh A-share scan and render all delivery images."""
+    """Run one fresh RSI scan and render all delivery images."""
     if scan_date is None:
         batch = scan_database_latest(
             settings,
-            market="a",
+            market=market,
             lookback_bars=lookback_bars,
             enforce_freshness=enforce_freshness,
         )
@@ -376,11 +445,13 @@ def prepare_delivery(
         batch = scan_database_on_date(
             settings,
             scan_date,
-            market="a",
+            market=market,
             lookback_bars=lookback_bars,
             enforce_freshness=enforce_freshness,
         )
-    output_dir = output_root / batch.scan_date.isoformat()
+    output_dir = output_root / ("rsi" if market == "a" else f"rsi_{market}") / (
+        batch.scan_date.isoformat()
+    )
     rendered = [
         (
             match,
@@ -396,27 +467,28 @@ def prepare_delivery(
         match.signal.direction is Direction.LONG for match in batch.matches
     )
     short_count = len(batch.matches) - long_count
+    market_label = _market_label(market)
     summary = (
-        f"RSI 顺势交易 A股日线扫描 {batch.scan_date:%Y-%m-%d}\n"
+        f"RSI 顺势交易 {market_label}日线扫描 {batch.scan_date:%Y-%m-%d}\n"
         f"扫描 {batch.scanned_symbols} 只，停牌/陈旧 {batch.stale_symbols} 只，"
         f"命中 {len(batch.matches)} 只（多 {long_count} / 空 {short_count}），"
         f"图片消息 {len(images)} 条。\n\n"
-        f"{format_filter_conditions()}"
+        f"{format_filter_conditions(market=market)}"
     )
     delivery = PreparedDelivery(
         batch.scan_date,
         summary,
         images,
-        DeliveryMetadata("RSI 顺势交易", "a"),
+        DeliveryMetadata("RSI 顺势交易", market),
     )
     _persist_delivery(
         delivery,
         output_root,
-        output_root / _rsi_manifest_name(batch.scan_date),
+        output_root / _rsi_manifest_name(market, batch.scan_date),
         "RSI",
     )
     if scan_date is None:
-        save_prepared_delivery(delivery, output_root / "latest_delivery.json")
+        save_prepared_delivery(delivery, output_root / _latest_rsi_manifest_name(market))
     return delivery
 
 
@@ -496,9 +568,14 @@ class QQSignalService(botpy.Client):
         self.charts_per_message = charts_per_message
         self.manifest = output_root / "latest_delivery.json"
         self.prepared = load_prepared_delivery(self.manifest)
-        self.prepared_by_date: dict[date, PreparedDelivery] = {}
+        self.rsi_prepared: dict[tuple[Market, date], PreparedDelivery] = {}
         if self.prepared is not None:
-            self.prepared_by_date[self.prepared.scan_date] = self.prepared
+            self.rsi_prepared[("a", self.prepared.scan_date)] = self.prepared
+        us_prepared = load_prepared_delivery(
+            output_root / _latest_rsi_manifest_name("us")
+        )
+        if us_prepared is not None:
+            self.rsi_prepared[("us", us_prepared.scan_date)] = us_prepared
         self.c2c_openid = os.getenv("QQBOT_OPENID")
         self.wm_prepared = {
             (market, pattern): delivery
@@ -615,28 +692,39 @@ class QQSignalService(botpy.Client):
     ) -> None:
         target_date = await asyncio.to_thread(
             self._resolve_rsi_target_date,
+            command.market,
             command.scan_date,
         )
+        market_label = _market_label(command.market)
         if target_date is None:
             await asyncio.to_thread(
                 self._reply_status,
                 target_type,
                 target_id,
                 msg_id,
-                "数据库中没有可发送的 A股 RSI 数据。",
+                f"数据库中没有可发送的 {market_label} RSI 数据。",
             )
             return
-        if not await asyncio.to_thread(a_share_data_exists, self.settings, target_date):
+        if not await asyncio.to_thread(
+            market_data_exists,
+            self.settings,
+            command.market,
+            target_date,
+        ):
             await asyncio.to_thread(
                 self._reply_status,
                 target_type,
                 target_id,
                 msg_id,
-                f"数据库中没有 {target_date:%Y-%m-%d} 的完整 A股日线和复权数据。",
+                f"数据库中没有 {target_date:%Y-%m-%d} 的 {market_label} 日线数据。",
             )
             return
-        command_label = f"发送{target_date:%Y-%m-%d}"
-        prepared = self._load_rsi_delivery(target_date)
+        command_label = (
+            f"发送{target_date:%Y-%m-%d}"
+            if command.market == "a"
+            else f"发送美股{target_date:%Y-%m-%d}"
+        )
+        prepared = self._load_rsi_delivery(command.market, target_date)
         cache_date = prepared.scan_date if prepared is not None else "无"
         print(f"收到命令：{command_label}；当前缓存日期：{cache_date}。", flush=True)
         if prepared is not None and not delivery_images_exist(prepared):
@@ -644,7 +732,7 @@ class QQSignalService(botpy.Client):
                 f"{prepared.scan_date} RSI 缓存图片缺失，清空缓存并重新准备。",
                 flush=True,
             )
-            self.prepared_by_date.pop(prepared.scan_date, None)
+            self.rsi_prepared.pop((command.market, prepared.scan_date), None)
             if self.prepared is prepared:
                 self.prepared = None
             prepared = None
@@ -679,6 +767,7 @@ class QQSignalService(botpy.Client):
                     target_type,
                     target_id,
                     msg_id,
+                    command.market,
                     target_date,
                     stop_event,
                 )
@@ -703,28 +792,41 @@ class QQSignalService(botpy.Client):
             )
         )
 
-    def _resolve_rsi_target_date(self, requested_date: date | None) -> date | None:
+    def _resolve_rsi_target_date(
+        self,
+        market: Market,
+        requested_date: date | None,
+    ) -> date | None:
         if requested_date is not None:
             return requested_date
+        if market == "us":
+            return read_us_share_latest_data_date(self.settings)
         return read_a_share_latest_data_date(self.settings)
 
-    def _load_rsi_delivery(self, scan_date: date) -> PreparedDelivery | None:
-        prepared = self.prepared_by_date.get(scan_date)
+    def _load_rsi_delivery(
+        self,
+        market: Market,
+        scan_date: date,
+    ) -> PreparedDelivery | None:
+        prepared = self.rsi_prepared.get((market, scan_date))
         if prepared is not None:
             return prepared
         prepared = load_prepared_delivery(
-            self.output_root / _rsi_manifest_name(scan_date)
+            self.output_root / _rsi_manifest_name(market, scan_date)
         )
         if prepared is None:
             return None
-        self.prepared_by_date[prepared.scan_date] = prepared
-        if self.prepared is None or self.prepared.scan_date <= prepared.scan_date:
+        self.rsi_prepared[(market, prepared.scan_date)] = prepared
+        if market == "a" and (
+            self.prepared is None or self.prepared.scan_date <= prepared.scan_date
+        ):
             self.prepared = prepared
         return prepared
 
     def _clear_delivery_cache(self) -> None:
         manifests = [
             self.manifest,
+            *self.output_root.glob("latest_delivery_*.json"),
             *self.output_root.glob("rsi_*.json"),
             *self.output_root.glob("latest_wm_*.json"),
         ]
@@ -738,7 +840,7 @@ class QQSignalService(botpy.Client):
         if failed:
             print("部分缓存文件未删除，重启后可能仍会加载残留缓存。", flush=True)
         self.prepared = None
-        self.prepared_by_date.clear()
+        self.rsi_prepared.clear()
         self.wm_prepared.clear()
 
     def _stop_delivery_tasks(self) -> None:
@@ -817,16 +919,22 @@ class QQSignalService(botpy.Client):
         target_type: QQTargetType,
         target_id: str,
         msg_id: str,
+        market: Market,
         scan_date: date,
         stop_event: Event,
     ) -> None:
         async with self._delivery_lock:
             try:
-                print(f"未找到 {scan_date:%Y-%m-%d} 缓存，开始 RSI 扫描。", flush=True)
+                print(
+                    f"未找到 {scan_date:%Y-%m-%d} {_market_label(market)}缓存，"
+                    "开始 RSI 扫描。",
+                    flush=True,
+                )
                 prepared = await asyncio.to_thread(
                     prepare_delivery,
                     self.settings,
                     self.output_root,
+                    market=market,
                     lookback_bars=self.lookback_bars,
                     charts_per_message=self.charts_per_message,
                     enforce_freshness=False,
@@ -835,8 +943,9 @@ class QQSignalService(botpy.Client):
                 if stop_event.is_set():
                     print("RSI 扫描完成，但发送已停止。", flush=True)
                     return
-                self.prepared = prepared
-                self.prepared_by_date[prepared.scan_date] = prepared
+                if market == "a":
+                    self.prepared = prepared
+                self.rsi_prepared[(market, prepared.scan_date)] = prepared
                 await asyncio.to_thread(
                     self._deliver_sync,
                     target_type,
@@ -976,10 +1085,11 @@ class QQSignalService(botpy.Client):
                         prepare_delivery,
                         self.settings,
                         self.output_root,
+                        market="a",
                         lookback_bars=self.lookback_bars,
                         charts_per_message=self.charts_per_message,
                     )
-                    self.prepared_by_date[self.prepared.scan_date] = self.prepared
+                    self.rsi_prepared[("a", self.prepared.scan_date)] = self.prepared
                     print(
                         f"{self.prepared.scan_date} RSI 顺势交易扫描完成。",
                         flush=True,
