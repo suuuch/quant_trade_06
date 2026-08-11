@@ -23,6 +23,7 @@ from botpy.message import C2CMessage, GroupMessage
 from quant_trade.delivery_store import (
     DeliveryImage,
     DeliveryMetadata,
+    DeliverySignalResult,
     PreparedDelivery,
     delivery_duckdb_path,
     delivery_images_exist,
@@ -30,6 +31,7 @@ from quant_trade.delivery_store import (
     record_delivery_send_event,
     save_delivery_to_duckdb,
     save_prepared_delivery,
+    save_signal_results_to_duckdb,
 )
 from quant_trade.qq_bot import QQBotClient, QQBotError, QQTargetType
 from quant_trade.rsi50 import Direction, Rsi50Config
@@ -81,7 +83,20 @@ class ClearCacheCommand:
     """A command that clears prepared delivery caches."""
 
 
-QQCommand = StopCommand | ClearCacheCommand | WmCommand | RsiCommand
+@dataclass(frozen=True)
+class ContinueCommand:
+    """A command that resumes the last incomplete delivery."""
+
+
+@dataclass(frozen=True)
+class ResumeState:
+    """The next image index for one interrupted delivery."""
+
+    prepared: PreparedDelivery
+    next_image_index: int
+
+
+QQCommand = StopCommand | ClearCacheCommand | ContinueCommand | WmCommand | RsiCommand
 
 
 def market_data_ready(status: MarketDataStatus) -> bool:
@@ -244,6 +259,7 @@ def prepare_wm_deliveries(
             output_root,
             output_root / _wm_manifest_name(market, pattern),
             "W/M",
+            signal_results=_wm_signal_results(selected),
         )
         deliveries[pattern] = delivery
     return deliveries
@@ -305,6 +321,8 @@ def parse_qq_command(content: str) -> QQCommand | None:
         return StopCommand()
     if "清理缓存" in compact:
         return ClearCacheCommand()
+    if compact in {"继续", "继续发送"}:
+        return ContinueCommand()
     wm_command = parse_wm_command(content)
     if wm_command is not None:
         return wm_command
@@ -486,6 +504,7 @@ def prepare_delivery(
         output_root,
         output_root / _rsi_manifest_name(market, batch.scan_date),
         "RSI",
+        signal_results=_rsi_signal_results(batch.matches),
     )
     if scan_date is None:
         save_prepared_delivery(delivery, output_root / _latest_rsi_manifest_name(market))
@@ -497,6 +516,8 @@ def _persist_delivery(
     output_root: Path,
     manifest_path: Path,
     log_label: str,
+    *,
+    signal_results: list[DeliverySignalResult] | None = None,
 ) -> None:
     save_prepared_delivery(delivery, manifest_path)
     try:
@@ -505,8 +526,62 @@ def _persist_delivery(
             delivery_duckdb_path(output_root),
             manifest_path=manifest_path,
         )
+        if signal_results is not None:
+            save_signal_results_to_duckdb(
+                delivery_duckdb_path(output_root),
+                metadata=delivery.metadata,
+                scan_date=delivery.scan_date,
+                results=signal_results,
+            )
     except (duckdb.Error, OSError, ValueError) as error:
         print(f"DuckDB 写入 {log_label} 发送缓存失败：{error}", flush=True)
+
+
+def _rsi_signal_results(matches: list[SignalMatch]) -> list[DeliverySignalResult]:
+    executed_at = datetime.now()
+    return [
+        DeliverySignalResult(
+            code=match.symbol,
+            signal_datetime=match.signal.timestamp.date(),
+            side=match.signal.direction.value,
+            close_price=match.signal.close,
+            signal_category=_delivery_direction_label(
+                match.signal.direction,
+                "RSI 顺势交易",
+            ),
+            executed_at=executed_at,
+            name=match.name,
+            industry=match.industry,
+            rsi=match.signal.rsi,
+            atr=match.signal.atr,
+            market_cap_cny=match.market_cap_cny,
+        )
+        for match in matches
+    ]
+
+
+def _wm_signal_results(
+    matches: list[tuple[WmSignalMatch, Path]],
+) -> list[DeliverySignalResult]:
+    executed_at = datetime.now()
+    return [
+        DeliverySignalResult(
+            code=match.symbol,
+            signal_datetime=match.signal.timestamp.date(),
+            side=match.signal.direction.value,
+            close_price=match.signal.close,
+            signal_category=(
+                "W底" if match.signal.direction is Direction.LONG else "M顶"
+            ),
+            executed_at=executed_at,
+            name=match.name,
+            industry=match.industry,
+            atr=match.signal.atr,
+            market_cap_cny=match.market_cap_cny,
+            neckline=match.signal.neckline,
+        )
+        for match, _ in matches
+    ]
 
 
 def _chunk_rendered(
@@ -593,6 +668,7 @@ class QQSignalService(botpy.Client):
         self._scheduler_task: asyncio.Task[None] | None = None
         self._delivery_lock = asyncio.Lock()
         self._delivery_tasks: dict[asyncio.Task[None], Event] = {}
+        self._resume_states: dict[tuple[QQTargetType, str], ResumeState] = {}
 
     async def on_ready(self) -> None:
         """Start the daily data-check scheduler after QQ connects."""
@@ -647,6 +723,8 @@ class QQSignalService(botpy.Client):
             await self._handle_stop_command(target_type, target_id, msg_id)
         elif isinstance(command, ClearCacheCommand):
             await self._handle_clear_cache_command(target_type, target_id, msg_id)
+        elif isinstance(command, ContinueCommand):
+            await self._handle_continue_command(target_type, target_id, msg_id)
         elif isinstance(command, WmCommand):
             await self._handle_wm_command(target_type, target_id, msg_id, command)
         else:
@@ -681,6 +759,43 @@ class QQSignalService(botpy.Client):
             target_id,
             msg_id,
             "缓存已清理；下次发送将重新扫描并生成图片。",
+        )
+
+    async def _handle_continue_command(
+        self,
+        target_type: QQTargetType,
+        target_id: str,
+        msg_id: str,
+    ) -> None:
+        state = self._resume_states.get((target_type, target_id))
+        if state is None:
+            await asyncio.to_thread(
+                self._reply_status,
+                target_type,
+                target_id,
+                msg_id,
+                "没有可继续的发送任务。",
+            )
+            return
+        if self._delivery_lock.locked():
+            await asyncio.to_thread(
+                self._reply_status,
+                target_type,
+                target_id,
+                msg_id,
+                "已有一批信号正在发送，请稍后再试。",
+            )
+            return
+        self._start_delivery_task(
+            lambda stop_event: self._deliver(
+                target_type,
+                target_id,
+                msg_id,
+                state.prepared,
+                stop_event,
+                start_image_index=state.next_image_index,
+                send_summary=False,
+            )
         )
 
     async def _handle_rsi_command(
@@ -1131,6 +1246,9 @@ class QQSignalService(botpy.Client):
         msg_id: str,
         prepared: PreparedDelivery,
         stop_event: Event,
+        *,
+        start_image_index: int = 1,
+        send_summary: bool = True,
     ) -> None:
         async with self._delivery_lock:
             try:
@@ -1141,7 +1259,9 @@ class QQSignalService(botpy.Client):
                     msg_id,
                     prepared,
                     stop_event,
-                    1,
+                    1 if send_summary else 0,
+                    start_image_index,
+                    send_summary,
                 )
             except (QQBotError, OSError, TypeError, ValueError) as error:
                 print(f"QQ 批量发送失败：{error}", flush=True)
@@ -1161,13 +1281,18 @@ class QQSignalService(botpy.Client):
         prepared: PreparedDelivery,
         stop_event: Event,
         first_msg_seq: int = 1,
+        start_image_index: int = 1,
+        send_summary: bool = True,
     ) -> None:
+        resume_key = (target_type, target_id)
+        start_image_index = max(1, start_image_index)
         print(
             f"开始发送 {prepared.scan_date} 扫描结果："
-            f"{len(prepared.images)} 条图片消息。",
+            f"{len(prepared.images)} 条图片消息，从第 {start_image_index} 条开始。",
             flush=True,
         )
         if stop_event.is_set():
+            self._resume_states[resume_key] = ResumeState(prepared, start_image_index)
             self._record_send_event(
                 prepared,
                 target_type,
@@ -1183,18 +1308,24 @@ class QQSignalService(botpy.Client):
             "started",
         )
         client = QQBotClient()
-        client.send_text(
-            target_type,
-            target_id,
-            prepared.summary,
-            msg_id=msg_id,
-            msg_seq=first_msg_seq,
-        )
-        print("QQ 筛选条件和扫描汇总已发送。", flush=True)
+        image_msg_seq_base = first_msg_seq if send_summary else 0
+        if send_summary:
+            client.send_text(
+                target_type,
+                target_id,
+                prepared.summary,
+                msg_id=msg_id,
+                msg_seq=first_msg_seq,
+            )
+            print("QQ 筛选条件和扫描汇总已发送。", flush=True)
         total = len(prepared.images)
-        for index, image in enumerate(prepared.images, start=1):
+        for sent_count, (index, image) in enumerate(
+            enumerate(prepared.images[start_image_index - 1 :], start=start_image_index),
+            start=1,
+        ):
             if stop_event.is_set():
                 print("发送已停止，剩余图片不再发送。", flush=True)
+                self._resume_states[resume_key] = ResumeState(prepared, index)
                 self._record_send_event(
                     prepared,
                     target_type,
@@ -1207,6 +1338,7 @@ class QQSignalService(botpy.Client):
                 time.sleep(self.send_delay)
             if stop_event.is_set():
                 print("发送已停止，剩余图片不再发送。", flush=True)
+                self._resume_states[resume_key] = ResumeState(prepared, index)
                 self._record_send_event(
                     prepared,
                     target_type,
@@ -1219,21 +1351,30 @@ class QQSignalService(botpy.Client):
                 image.direction,
                 prepared.metadata.strategy,
             )
-            client.send_image(
-                target_type,
-                target_id,
-                image.path,
-                content=(
-                    f"{direction_label}信号 {index}/{total}\n{'、'.join(image.symbols)}"
-                ),
-                msg_id=msg_id,
-                msg_seq=first_msg_seq + index,
-            )
+            try:
+                client.send_image(
+                    target_type,
+                    target_id,
+                    image.path,
+                    content=(
+                        f"{direction_label}信号 {index}/{total}\n"
+                        f"{'、'.join(image.symbols)}"
+                    ),
+                    msg_id=msg_id,
+                    msg_seq=image_msg_seq_base + sent_count,
+                )
+            except (QQBotError, OSError, TypeError, ValueError):
+                self._resume_states[resume_key] = ResumeState(prepared, index)
+                raise
             print(
                 f"QQ 已发送 {index}/{total}: {'、'.join(image.symbols)}",
                 flush=True,
             )
+            next_index = index + 1
+            if next_index <= total:
+                self._resume_states[resume_key] = ResumeState(prepared, next_index)
         print(f"{prepared.scan_date} QQ 批量发送完成。", flush=True)
+        self._resume_states.pop(resume_key, None)
         self._record_send_event(
             prepared,
             target_type,

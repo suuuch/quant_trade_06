@@ -11,15 +11,19 @@ import pytest
 from quant_trade.delivery_store import (
     DeliveryImage,
     DeliveryMetadata,
+    DeliverySignalResult,
     PreparedDelivery,
     delivery_duckdb_path,
     delivery_images_exist,
     load_prepared_delivery,
     save_delivery_to_duckdb,
     save_prepared_delivery,
+    save_signal_results_to_duckdb,
 )
+from quant_trade.qq_bot import QQBotError
 from quant_trade.qq_service import (
     ClearCacheCommand,
+    ContinueCommand,
     QQSignalService,
     RsiCommand,
     StopCommand,
@@ -132,6 +136,7 @@ def test_rsi_command_accepts_optional_target_date() -> None:
 def test_qq_command_parser_returns_atomic_command_types() -> None:
     assert isinstance(parse_qq_command("停止发送"), StopCommand)
     assert isinstance(parse_qq_command("清理缓存"), ClearCacheCommand)
+    assert isinstance(parse_qq_command("继续"), ContinueCommand)
     assert isinstance(parse_qq_command("发送W底"), WmCommand)
     assert isinstance(parse_qq_command("发送2026-07-25"), RsiCommand)
     assert parse_qq_command("随便看看") is None
@@ -226,6 +231,55 @@ def test_prepared_delivery_is_written_to_duckdb(tmp_path: Path) -> None:
     assert image_rows == [(1, '["000001.SZ"]', "long")]
 
 
+def test_signal_results_are_written_to_duckdb(tmp_path: Path) -> None:
+    database = delivery_duckdb_path(tmp_path)
+    metadata = DeliveryMetadata("RSI 顺势交易", "a")
+    executed_at = datetime(2026, 8, 10, 18, 30)
+
+    save_signal_results_to_duckdb(
+        database,
+        metadata=metadata,
+        scan_date=date(2026, 8, 10),
+        results=[
+            DeliverySignalResult(
+                code="000001.SZ",
+                signal_datetime=date(2026, 8, 10),
+                side="long",
+                close_price=12.34,
+                signal_category="RSI 顺势交易多头",
+                executed_at=executed_at,
+                signal_fill=True,
+                name="平安银行",
+                industry="银行",
+                rsi=52.1,
+                atr=0.8,
+                market_cap_cny=100_000_000.0,
+            )
+        ],
+    )
+
+    with duckdb.connect(str(database)) as connection:
+        rows = connection.execute(
+            """
+            SELECT code, datetime, side, close_price, signal_category,
+                   executed_at, signal_fill
+            FROM strategy_signal_results
+            """
+        ).fetchall()
+
+    assert rows == [
+        (
+            "000001.SZ",
+            date(2026, 8, 10),
+            "long",
+            12.34,
+            "RSI 顺势交易多头",
+            executed_at,
+            True,
+        )
+    ]
+
+
 def test_batch_delivery_uses_passive_reply_for_images(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -289,3 +343,86 @@ def test_batch_delivery_uses_passive_reply_for_images(
         ("text", "source-message-id", 1),
         ("image", "source-message-id", 2),
     ]
+
+
+def test_batch_delivery_can_resume_after_failed_image(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, int | None]] = []
+    attempts = {"images": 0}
+
+    class FakeQQBotClient:
+        def send_text(
+            self,
+            target_type: str,
+            target_id: str,
+            content: str,
+            *,
+            msg_id: str | None = None,
+            msg_seq: int | None = None,
+        ) -> dict[str, str]:
+            calls.append(("text", content, msg_seq))
+            return {}
+
+        def send_image(
+            self,
+            target_type: str,
+            target_id: str,
+            image_path: Path,
+            *,
+            content: str = "",
+            msg_id: str | None = None,
+            msg_seq: int | None = None,
+        ) -> dict[str, str]:
+            attempts["images"] += 1
+            calls.append(("image", content, msg_seq))
+            if attempts["images"] == 2:
+                raise QQBotError("temporary failure")
+            return {}
+
+    monkeypatch.setattr("quant_trade.qq_service.QQBotClient", FakeQQBotClient)
+    images = []
+    for index in range(2):
+        image = tmp_path / f"batch_{index}.png"
+        image.write_bytes(b"png")
+        images.append(DeliveryImage(image, (f"00000{index}.SZ",), Direction.LONG))
+    service = QQSignalService(
+        settings=DatabaseSettings("localhost", 5432, "db", "user", "password"),
+        output_root=tmp_path,
+        check_time=time(18),
+        poll_seconds=300.0,
+        send_delay=0.0,
+        lookback_bars=240,
+        charts_per_message=4,
+    )
+    prepared = PreparedDelivery(
+        scan_date=date(2026, 8, 10),
+        summary="summary",
+        images=tuple(images),
+        metadata=DeliveryMetadata("RSI 顺势交易", "a"),
+    )
+
+    with pytest.raises(QQBotError):
+        service._deliver_sync(
+            "group",
+            "group-openid",
+            "source-message-id",
+            prepared,
+            Event(),
+        )
+    state = service._resume_states[("group", "group-openid")]
+    service._deliver_sync(
+        "group",
+        "group-openid",
+        "continue-message-id",
+        state.prepared,
+        Event(),
+        start_image_index=state.next_image_index,
+        send_summary=False,
+    )
+
+    assert [call[0] for call in calls] == ["text", "image", "image", "image"]
+    assert calls[-1][1].startswith("RSI 顺势交易多头信号 2/2")
+    assert calls[-1][2] == 1
+    assert ("group", "group-openid") not in service._resume_states

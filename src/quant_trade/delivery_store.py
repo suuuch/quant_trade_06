@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
@@ -40,6 +40,25 @@ class PreparedDelivery:
     metadata: DeliveryMetadata = field(
         default_factory=lambda: DeliveryMetadata("unknown")
     )
+
+
+@dataclass(frozen=True)
+class DeliverySignalResult:
+    """One strategy signal row persisted for text/database review."""
+
+    code: str
+    signal_datetime: date
+    side: str
+    close_price: float
+    signal_category: str
+    executed_at: datetime
+    signal_fill: bool = True
+    name: str = ""
+    industry: str = ""
+    rsi: float | None = None
+    atr: float | None = None
+    market_cap_cny: float | None = None
+    neckline: float | None = None
 
 
 def save_prepared_delivery(delivery: PreparedDelivery, manifest: Path) -> None:
@@ -211,6 +230,88 @@ def save_delivery_to_duckdb(
             raise
 
 
+def save_signal_results_to_duckdb(
+    database_path: Path,
+    *,
+    metadata: DeliveryMetadata,
+    scan_date: date,
+    results: list[DeliverySignalResult],
+) -> None:
+    """Persist per-symbol strategy signal rows to DuckDB."""
+    database_path.parent.mkdir(parents=True, exist_ok=True)
+    with duckdb.connect(str(database_path)) as connection:
+        _ensure_delivery_duckdb_schema(connection)
+        try:
+            connection.execute("BEGIN")
+            params = (
+                metadata.strategy,
+                metadata.market,
+                metadata.pattern or "",
+                scan_date,
+            )
+            connection.execute(
+                """
+                DELETE FROM strategy_signal_results
+                WHERE strategy = ? AND market = ? AND coalesce(pattern, '') = ?
+                  AND scan_date = ?
+                """,
+                params,
+            )
+            if results:
+                connection.executemany(
+                    """
+                    INSERT INTO strategy_signal_results (
+                        strategy,
+                        market,
+                        pattern,
+                        scan_date,
+                        code,
+                        datetime,
+                        side,
+                        close_price,
+                        signal_category,
+                        executed_at,
+                        signal_fill,
+                        name,
+                        industry,
+                        rsi,
+                        atr,
+                        market_cap_cny,
+                        neckline,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            metadata.strategy,
+                            metadata.market,
+                            metadata.pattern,
+                            scan_date,
+                            result.code,
+                            result.signal_datetime,
+                            result.side,
+                            result.close_price,
+                            result.signal_category,
+                            result.executed_at,
+                            result.signal_fill,
+                            result.name,
+                            result.industry,
+                            result.rsi,
+                            result.atr,
+                            result.market_cap_cny,
+                            result.neckline,
+                            datetime.now(),
+                        )
+                        for result in results
+                    ],
+                )
+            connection.execute("COMMIT")
+        except Exception:
+            connection.execute("ROLLBACK")
+            raise
+
+
 def record_delivery_send_event(
     database_path: Path,
     *,
@@ -303,4 +404,55 @@ def _ensure_delivery_duckdb_schema(connection: duckdb.DuckDBPyConnection) -> Non
     )
     connection.execute(
         "ALTER TABLE delivery_send_events ADD COLUMN IF NOT EXISTS pattern TEXT"
+    )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS strategy_signal_results (
+            strategy TEXT NOT NULL,
+            market TEXT NOT NULL,
+            pattern TEXT,
+            scan_date DATE NOT NULL,
+            code TEXT NOT NULL,
+            datetime DATE NOT NULL,
+            side TEXT NOT NULL,
+            close_price DOUBLE NOT NULL,
+            signal_category TEXT NOT NULL,
+            executed_at TIMESTAMP NOT NULL,
+            signal_fill BOOLEAN NOT NULL,
+            name TEXT,
+            industry TEXT,
+            rsi DOUBLE,
+            atr DOUBLE,
+            market_cap_cny DOUBLE,
+            neckline DOUBLE,
+            updated_at TIMESTAMP NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "ALTER TABLE strategy_signal_results ADD COLUMN IF NOT EXISTS pattern TEXT"
+    )
+    connection.execute(
+        """
+        ALTER TABLE strategy_signal_results
+        ADD COLUMN IF NOT EXISTS signal_fill BOOLEAN
+        """
+    )
+    connection.execute(
+        """
+        ALTER TABLE strategy_signal_results
+        ADD COLUMN IF NOT EXISTS signal_category TEXT
+        """
+    )
+    connection.execute(
+        """
+        ALTER TABLE strategy_signal_results
+        ADD COLUMN IF NOT EXISTS executed_at TIMESTAMP
+        """
+    )
+    connection.execute(
+        """
+        ALTER TABLE strategy_signal_results
+        ADD COLUMN IF NOT EXISTS datetime DATE
+        """
     )

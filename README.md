@@ -174,6 +174,8 @@ RSI 顺势交易指令：
   扫描并生成图片。DuckDB 历史记录会保留；
 - `停止发送`：终止当前发送任务。已经发出的消息无法撤回，正在进行中的单条
   QQ 请求不会被硬中断，但后续图片会停止发送。
+- `继续`：从上一次未发送完成的图片序号继续发送，不重复发送已经成功发出的
+  图片。
 
 独立 W/M 指令：
 
@@ -212,10 +214,13 @@ uv run python scripts/run_qq_signal_listener.py --help
 
 ### QQ 发送记录 DuckDB
 
-常驻服务会在 `reports/qq_signals/qq_delivery.duckdb` 中维护三张表：
+常驻服务会在 `reports/qq_signals/qq_delivery.duckdb` 中维护四张表：
 
 - `deliveries`：每个策略、市场、形态和日期的发送缓存摘要；
 - `delivery_images`：每张合图的路径、股票列表和方向；
+- `strategy_signal_results`：每天筛选命中的逐只股票结果，包含 `code`、
+  `datetime`、`side`、`close_price`、`signal_category`、`executed_at`
+  和 `signal_fill` 等字段；
 - `delivery_send_events`：每次发送的 `started`、`completed`、`stopped`、
   `failed` 事件。
 
@@ -227,8 +232,9 @@ import duckdb
 
 with duckdb.connect("reports/qq_signals/qq_delivery.duckdb") as con:
     print(con.execute(
-        "select strategy, market, pattern, scan_date, image_count "
-        "from deliveries order by updated_at desc limit 10"
+        "select strategy, market, pattern, scan_date, code, datetime, "
+        "side, close_price, signal_category, executed_at, signal_fill "
+        "from strategy_signal_results order by executed_at desc, code limit 20"
     ).fetchall())
 PY
 ```
