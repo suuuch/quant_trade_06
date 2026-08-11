@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from matplotlib import pyplot as plt
+from matplotlib.collections import PathCollection
 from matplotlib.figure import Figure
 
 from quant_trade.rsi50 import Direction
@@ -101,12 +102,40 @@ def test_wm_price_axis_uses_log_scale(
     assert closed[0].axes[1].get_yscale() == "linear"
 
 
+def test_wm_entry_marker_is_two_percent_below_last_candle_low(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    match = scan_wm_symbol_frame(
+        "000001.SZ",
+        "Test",
+        "Bank",
+        _w_bottom_frame(),
+    )[0]
+    closed: list[Figure] = []
+    monkeypatch.setattr(plt, "close", closed.append)
+
+    render_wm_signal_chart(match, tmp_path / "wm_offset.png")
+
+    price_axis = closed[0].axes[0]
+    last_candle_x = len(match.frame) - 1
+    last_low = float(match.frame.iloc[-1]["low"])
+    marker_collections = [
+        collection
+        for collection in price_axis.collections
+        if isinstance(collection, PathCollection)
+    ]
+    entry_marker = marker_collections[1].get_offsets()[0]
+    assert entry_marker[0] == last_candle_x
+    assert entry_marker[1] == pytest.approx(last_low * 0.98)
+
+
 def test_entry_marker_is_clear_of_signal_candle() -> None:
     long_marker = _entry_marker_price(low=10.0, high=12.0, direction=Direction.LONG)
     short_marker = _entry_marker_price(low=10.0, high=12.0, direction=Direction.SHORT)
 
-    assert long_marker < 10.0
-    assert short_marker > 12.0
+    assert long_marker == pytest.approx(9.8)
+    assert short_marker == pytest.approx(12.24)
 
 
 def test_wm_chart_indicators_include_ma20_ma30_and_rsi14() -> None:

@@ -306,11 +306,10 @@ def render_wm_signal_chart(
 
 
 def _entry_marker_price(*, low: float, high: float, direction: Direction) -> float:
-    """Place an entry marker clear of the signal candle on a log price axis."""
-    distance_ratio = 1.02
+    """Place an entry marker 2% beyond the signal candle's high or low."""
     if direction is Direction.LONG:
-        return low / distance_ratio
-    return high * distance_ratio
+        return low * 0.98
+    return high * 1.02
 
 
 def _indicator_engine(frame: pd.DataFrame) -> Rsi50SignalEngine:
