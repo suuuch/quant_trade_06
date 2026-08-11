@@ -229,12 +229,6 @@ def render_wm_signal_chart(
         match.frame.iloc[signal.second_pivot_index][price_column],
     ]
     signal_color = "#d94b55" if is_w_bottom else "#218c5b"
-    trigger_bar = match.frame.iloc[-1]
-    entry_marker_price = _entry_marker_price(
-        low=float(trigger_bar["low"]),
-        high=float(trigger_bar["high"]),
-        direction=signal.direction,
-    )
     price_axis.scatter(
         [first_x, second_x],
         pivot_prices,
@@ -252,15 +246,23 @@ def render_wm_signal_chart(
         linewidth=1.2,
         label="Neckline",
     )
-    price_axis.scatter(
-        [trigger_x],
-        [entry_marker_price],
-        marker="^" if is_w_bottom else "v",
+    price_axis.axvline(
+        trigger_x,
         color=signal_color,
-        edgecolor="white",
-        s=110,
-        zorder=6,
+        linestyle="--",
+        linewidth=1.2,
+        alpha=0.6,
         label="Entry",
+    )
+    price_axis.text(
+        trigger_x,
+        0.01,
+        "B",
+        transform=price_axis.get_xaxis_transform(),
+        color=signal_color,
+        ha="center",
+        va="bottom",
+        fontweight="bold",
     )
     price_axis.annotate(
         "P1", (first_x, pivot_prices[0]), xytext=(0, 10), textcoords="offset points"
@@ -303,14 +305,6 @@ def render_wm_signal_chart(
     figure.savefig(destination, dpi=100)
     plt.close(figure)
     return destination
-
-
-def _entry_marker_price(*, low: float, high: float, direction: Direction) -> float:
-    """Place an entry marker 2% beyond the signal candle's high or low."""
-    if direction is Direction.LONG:
-        return low * 0.98
-    return high * 1.02
-
 
 def _indicator_engine(frame: pd.DataFrame) -> Rsi50SignalEngine:
     """Calculate MA20, MA30, and RSI solely for chart observation."""

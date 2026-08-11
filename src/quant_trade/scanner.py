@@ -403,21 +403,23 @@ def render_signal_chart(
     trigger_x = len(match.frame) - 1 - start
     is_long = signal.direction is Direction.LONG
     signal_color = "#d94b55" if is_long else "#218c5b"
-    trigger_bar = match.frame.iloc[-1]
-    entry_marker_price = _entry_marker_price(
-        low=float(trigger_bar["low"]),
-        high=float(trigger_bar["high"]),
-        direction=signal.direction,
-    )
-    price_axis.scatter(
-        [trigger_x],
-        [entry_marker_price],
-        marker="^" if is_long else "v",
+    price_axis.axvline(
+        trigger_x,
         color=signal_color,
-        edgecolor="white",
-        s=110,
-        zorder=6,
+        linestyle="--",
+        linewidth=1.2,
+        alpha=0.6,
         label="Signal",
+    )
+    price_axis.text(
+        trigger_x,
+        0.01,
+        "B",
+        transform=price_axis.get_xaxis_transform(),
+        color=signal_color,
+        ha="center",
+        va="bottom",
+        fontweight="bold",
     )
     direction = "LONG" if is_long else "SHORT"
     price_axis.set_title(
@@ -445,14 +447,6 @@ def render_signal_chart(
     figure.savefig(destination, dpi=100)
     plt.close(figure)
     return destination
-
-
-def _entry_marker_price(*, low: float, high: float, direction: Direction) -> float:
-    """Place a signal marker 2% beyond the signal candle's high or low."""
-    if direction is Direction.LONG:
-        return low * 0.98
-    return high * 1.02
-
 
 def render_signal_sheet(
     image_paths: list[Path],

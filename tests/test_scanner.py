@@ -8,7 +8,6 @@ from typing import cast
 import pandas as pd
 import pytest
 from matplotlib import pyplot as plt
-from matplotlib.collections import PathCollection
 from matplotlib.figure import Figure
 
 from quant_trade.rsi50 import Direction
@@ -18,7 +17,6 @@ from quant_trade.scanner import (
     _US_SHARE_SCAN_QUERY,
     DataFreshnessError,
     MarketDataStatus,
-    _entry_marker_price,
     _evaluate_rows,
     render_signal_chart,
     render_signal_sheet,
@@ -97,7 +95,7 @@ def test_scan_symbol_accepts_us_market() -> None:
     assert match.market == "us"
 
 
-def test_render_signal_chart_places_entry_marker_two_percent_below_low(
+def test_render_signal_chart_marks_last_candle_with_translucent_dashed_line(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -110,23 +108,14 @@ def test_render_signal_chart_places_entry_marker_two_percent_below_low(
 
     price_axis = closed[0].axes[0]
     last_candle_x = len(match.frame) - 1
-    last_low = float(match.frame.iloc[-1]["low"])
-    marker_collections = [
-        collection
-        for collection in price_axis.collections
-        if isinstance(collection, PathCollection)
-    ]
-    signal_marker = marker_collections[0].get_offsets()[0]
-    assert signal_marker[0] == last_candle_x
-    assert signal_marker[1] == pytest.approx(last_low * 0.98)
-
-
-def test_entry_marker_price_uses_high_low_two_percent_offset() -> None:
-    long_marker = _entry_marker_price(low=10.0, high=12.0, direction=Direction.LONG)
-    short_marker = _entry_marker_price(low=10.0, high=12.0, direction=Direction.SHORT)
-
-    assert long_marker == pytest.approx(9.8)
-    assert short_marker == pytest.approx(12.24)
+    signal_line = price_axis.lines[-1]
+    assert signal_line.get_xdata()[0] == last_candle_x
+    assert signal_line.get_xdata()[1] == last_candle_x
+    assert signal_line.get_linestyle() == "--"
+    assert signal_line.get_alpha() == pytest.approx(0.6)
+    signal_label = price_axis.texts[0]
+    assert signal_label.get_text() == "B"
+    assert signal_label.get_position()[0] == last_candle_x
 
 
 def test_us_market_uses_ma20_direction_without_angle_threshold() -> None:

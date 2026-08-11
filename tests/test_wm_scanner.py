@@ -5,12 +5,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from matplotlib import pyplot as plt
-from matplotlib.collections import PathCollection
 from matplotlib.figure import Figure
 
 from quant_trade.rsi50 import Direction
 from quant_trade.wm_scanner import (
-    _entry_marker_price,
     _indicator_engine,
     render_wm_signal_chart,
     scan_wm_symbol_frame,
@@ -102,7 +100,7 @@ def test_wm_price_axis_uses_log_scale(
     assert closed[0].axes[1].get_yscale() == "linear"
 
 
-def test_wm_entry_marker_is_two_percent_below_last_candle_low(
+def test_wm_entry_marker_is_translucent_dashed_line_on_last_candle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -119,23 +117,14 @@ def test_wm_entry_marker_is_two_percent_below_last_candle_low(
 
     price_axis = closed[0].axes[0]
     last_candle_x = len(match.frame) - 1
-    last_low = float(match.frame.iloc[-1]["low"])
-    marker_collections = [
-        collection
-        for collection in price_axis.collections
-        if isinstance(collection, PathCollection)
-    ]
-    entry_marker = marker_collections[1].get_offsets()[0]
-    assert entry_marker[0] == last_candle_x
-    assert entry_marker[1] == pytest.approx(last_low * 0.98)
-
-
-def test_entry_marker_is_clear_of_signal_candle() -> None:
-    long_marker = _entry_marker_price(low=10.0, high=12.0, direction=Direction.LONG)
-    short_marker = _entry_marker_price(low=10.0, high=12.0, direction=Direction.SHORT)
-
-    assert long_marker == pytest.approx(9.8)
-    assert short_marker == pytest.approx(12.24)
+    entry_line = price_axis.lines[-1]
+    assert entry_line.get_xdata()[0] == last_candle_x
+    assert entry_line.get_xdata()[1] == last_candle_x
+    assert entry_line.get_linestyle() == "--"
+    assert entry_line.get_alpha() == pytest.approx(0.6)
+    entry_label = next(text for text in price_axis.texts if text.get_text() == "B")
+    assert entry_label.get_text() == "B"
+    assert entry_label.get_position()[0] == last_candle_x
 
 
 def test_wm_chart_indicators_include_ma20_ma30_and_rsi14() -> None:
