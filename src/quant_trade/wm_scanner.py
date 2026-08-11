@@ -246,14 +246,6 @@ def render_wm_signal_chart(
         linewidth=1.2,
         label="Neckline",
     )
-    price_axis.axvline(
-        trigger_x,
-        color=signal_color,
-        linestyle="--",
-        linewidth=1.2,
-        alpha=0.6,
-        label="Entry",
-    )
     price_axis.text(
         trigger_x,
         0.01,

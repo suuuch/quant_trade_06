@@ -100,7 +100,7 @@ def test_wm_price_axis_uses_log_scale(
     assert closed[0].axes[1].get_yscale() == "linear"
 
 
-def test_wm_entry_marker_is_translucent_dashed_line_on_last_candle(
+def test_wm_entry_marker_is_entry_label_on_last_candle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -117,11 +117,6 @@ def test_wm_entry_marker_is_translucent_dashed_line_on_last_candle(
 
     price_axis = closed[0].axes[0]
     last_candle_x = len(match.frame) - 1
-    entry_line = price_axis.lines[-1]
-    assert entry_line.get_xdata()[0] == last_candle_x
-    assert entry_line.get_xdata()[1] == last_candle_x
-    assert entry_line.get_linestyle() == "--"
-    assert entry_line.get_alpha() == pytest.approx(0.6)
     entry_label = next(text for text in price_axis.texts if text.get_text() == "B")
     assert entry_label.get_text() == "B"
     assert entry_label.get_position()[0] == last_candle_x

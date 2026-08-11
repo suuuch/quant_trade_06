@@ -95,7 +95,7 @@ def test_scan_symbol_accepts_us_market() -> None:
     assert match.market == "us"
 
 
-def test_render_signal_chart_marks_last_candle_with_translucent_dashed_line(
+def test_render_signal_chart_marks_last_candle_with_entry_label(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -108,11 +108,6 @@ def test_render_signal_chart_marks_last_candle_with_translucent_dashed_line(
 
     price_axis = closed[0].axes[0]
     last_candle_x = len(match.frame) - 1
-    signal_line = price_axis.lines[-1]
-    assert signal_line.get_xdata()[0] == last_candle_x
-    assert signal_line.get_xdata()[1] == last_candle_x
-    assert signal_line.get_linestyle() == "--"
-    assert signal_line.get_alpha() == pytest.approx(0.6)
     signal_label = price_axis.texts[0]
     assert signal_label.get_text() == "B"
     assert signal_label.get_position()[0] == last_candle_x

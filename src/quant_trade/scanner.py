@@ -403,14 +403,6 @@ def render_signal_chart(
     trigger_x = len(match.frame) - 1 - start
     is_long = signal.direction is Direction.LONG
     signal_color = "#d94b55" if is_long else "#218c5b"
-    price_axis.axvline(
-        trigger_x,
-        color=signal_color,
-        linestyle="--",
-        linewidth=1.2,
-        alpha=0.6,
-        label="Signal",
-    )
     price_axis.text(
         trigger_x,
         0.01,
@@ -427,7 +419,7 @@ def render_signal_chart(
     )
     price_axis.set_ylabel("QFQ Price" if match.market == "a" else "Price")
     price_axis.grid(alpha=0.18)
-    price_axis.legend(loc="upper left", ncols=4, fontsize=8)
+    price_axis.legend(loc="upper left", ncols=3, fontsize=8)
 
     rsi_axis.plot(x_values, rsi_values, color="#7a4cc2", linewidth=1.2)
     for level in (45, 50, 55):
