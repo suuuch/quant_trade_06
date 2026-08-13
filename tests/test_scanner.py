@@ -269,6 +269,28 @@ def test_render_signal_sheet_combines_charts(tmp_path: Path) -> None:
     assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
+def test_render_signal_sheet_uses_four_by_three_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    match = scan_symbol_frame("000001.SZ", "Test", "Bank", _latest_long_frame())
+    assert match is not None
+    chart = render_signal_chart(match, tmp_path / "signal.png")
+    calls: list[tuple[int, int]] = []
+    subplots = plt.subplots
+
+    def spy_subplots(*args: object, **kwargs: object) -> tuple[Figure, object]:
+        if len(args) >= 2:
+            calls.append((int(args[0]), int(args[1])))
+        return subplots(*args, **kwargs)
+
+    monkeypatch.setattr(plt, "subplots", spy_subplots)
+
+    render_signal_sheet([chart] * 12, tmp_path / "batch.png")
+
+    assert calls[-1] == (3, 4)
+
+
 def test_matches_are_sorted_by_market_cap_descending() -> None:
     frame = _latest_long_frame()
     small = scan_symbol_frame(

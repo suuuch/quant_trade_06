@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=float, default=300.0)
     parser.add_argument("--send-delay", type=float, default=3.0)
     parser.add_argument("--lookback-bars", type=int, default=240)
-    parser.add_argument("--charts-per-message", type=int, default=8)
+    parser.add_argument("--charts-per-message", type=int, default=12)
     parser.add_argument(
         "--output-dir",
         type=Path,

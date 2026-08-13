@@ -28,6 +28,16 @@ _filter_conditions = cast(
     Callable[[str, str], str],
     _MODULE._filter_conditions,
 )
+_LISTENER_SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "run_qq_signal_listener.py"
+_LISTENER_SPEC = importlib.util.spec_from_file_location(
+    "run_qq_signal_listener",
+    _LISTENER_SCRIPT_PATH,
+)
+if _LISTENER_SPEC is None or _LISTENER_SPEC.loader is None:
+    raise RuntimeError(f"cannot load {_LISTENER_SCRIPT_PATH}")
+_LISTENER_MODULE = importlib.util.module_from_spec(_LISTENER_SPEC)
+_LISTENER_SPEC.loader.exec_module(_LISTENER_MODULE)
+parse_listener_args = cast(Callable[[], argparse.Namespace], _LISTENER_MODULE.parse_args)
 
 
 def test_qq_delivery_defaults_to_group(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -36,6 +46,26 @@ def test_qq_delivery_defaults_to_group(monkeypatch: pytest.MonkeyPatch) -> None:
     args = parse_args()
 
     assert args.target_type == "group"
+
+
+def test_qq_delivery_defaults_to_twelve_charts_per_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["scan_rsi50_to_qq.py"])
+
+    args = parse_args()
+
+    assert args.charts_per_message == 12
+
+
+def test_listener_defaults_to_twelve_charts_per_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["run_qq_signal_listener.py"])
+
+    args = parse_listener_args()
+
+    assert args.charts_per_message == 12
 
 
 def test_default_group_target_comes_from_environment(

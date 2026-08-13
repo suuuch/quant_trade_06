@@ -24,6 +24,7 @@ from quant_trade.rsi50 import Bar, Direction, Rsi50Config, Rsi50SignalEngine, Si
 
 Market = Literal["a", "us"]
 logger = logging.getLogger(__name__)
+SIGNAL_SHEET_COLUMNS = 4
 
 plt.rcParams["font.sans-serif"] = [
     "Noto Sans CJK SC",
@@ -447,7 +448,7 @@ def render_signal_sheet(
     """Combine individual signal charts into one QQ delivery image."""
     if not image_paths:
         raise ValueError("image_paths must not be empty")
-    columns = min(2, len(image_paths))
+    columns = min(SIGNAL_SHEET_COLUMNS, len(image_paths))
     rows = math.ceil(len(image_paths) / columns)
     figure, axes = plt.subplots(
         rows,
