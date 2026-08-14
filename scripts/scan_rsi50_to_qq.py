@@ -243,25 +243,14 @@ def _market_label(market: str) -> str:
 
 def _filter_conditions(market: str, direction: str) -> str:
     """Describe the active strategy conditions for the QQ summary."""
-    config = (
-        Rsi50Config(ma_fast_min_angle_degrees=None) if market == "us" else Rsi50Config()
-    )
+    config = Rsi50Config()
     common = (
         f"共同：最新一天 RSI({config.rsi_period}) 位于 "
         f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
-    if config.ma_fast_min_angle_degrees is None:
-        long_ma = "MA20 向上"
-        short_ma = "MA20 向下"
-    else:
-        long_ma = (
-            f"MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 > "
-            f"{config.ma_fast_min_angle_degrees:g}°"
-        )
-        short_ma = (
-            f"MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 < "
-            f"-{config.ma_fast_min_angle_degrees:g}°"
-        )
+    pct = (config.ma_fast_min_daily_return or 0.0) * 100
+    long_ma = f"MA20 过去 {config.ma_fast_slope_days} 天平均每天上涨 {pct:g}% 或以上"
+    short_ma = f"MA20 过去 {config.ma_fast_slope_days} 天平均每天下跌 {pct:g}% 或以上"
     lines = ["RSI 顺势交易筛选条件（日线）：", common]
     if direction in {"long", "both"}:
         rsi_filter = config.rsi_filter_for(Direction.LONG)

@@ -125,25 +125,14 @@ def _market_label(market: Market) -> str:
 
 def format_filter_conditions(direction: str = "both", market: Market = "a") -> str:
     """Describe the active strategy conditions for a QQ summary."""
-    config = (
-        Rsi50Config(ma_fast_min_angle_degrees=None) if market == "us" else Rsi50Config()
-    )
+    config = Rsi50Config()
     common = (
         f"共同：最新一天 RSI({config.rsi_period}) 位于 "
         f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
-    if config.ma_fast_min_angle_degrees is None:
-        long_ma = "MA20 向上"
-        short_ma = "MA20 向下"
-    else:
-        long_ma = (
-            f"MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 > "
-            f"{config.ma_fast_min_angle_degrees:g}°"
-        )
-        short_ma = (
-            f"MA20 最近 {config.ma_fast_angle_bars} Bar 拟合角度 < "
-            f"-{config.ma_fast_min_angle_degrees:g}°"
-        )
+    pct = (config.ma_fast_min_daily_return or 0.0) * 100
+    long_ma = f"MA20 过去 {config.ma_fast_slope_days} 天平均每天上涨 {pct:g}% 或以上"
+    short_ma = f"MA20 过去 {config.ma_fast_slope_days} 天平均每天下跌 {pct:g}% 或以上"
     lines = ["RSI 顺势交易筛选条件（日线）：", common]
     if direction in {"long", "both"}:
         rsi_filter = config.rsi_filter_for(Direction.LONG)
@@ -416,7 +405,9 @@ def a_share_data_exists(settings: DatabaseSettings, scan_date: date) -> bool:
     return row is not None and bool(row[0]) and bool(row[1])
 
 
-def market_data_exists(settings: DatabaseSettings, market: Market, scan_date: date) -> bool:
+def market_data_exists(
+    settings: DatabaseSettings, market: Market, scan_date: date
+) -> bool:
     """Return whether the requested market contains the scan date."""
     if market == "a":
         return a_share_data_exists(settings, scan_date)
@@ -467,8 +458,10 @@ def prepare_delivery(
             lookback_bars=lookback_bars,
             enforce_freshness=enforce_freshness,
         )
-    output_dir = output_root / ("rsi" if market == "a" else f"rsi_{market}") / (
-        batch.scan_date.isoformat()
+    output_dir = (
+        output_root
+        / ("rsi" if market == "a" else f"rsi_{market}")
+        / (batch.scan_date.isoformat())
     )
     rendered = [
         (
@@ -507,7 +500,9 @@ def prepare_delivery(
         signal_results=_rsi_signal_results(batch.matches),
     )
     if scan_date is None:
-        save_prepared_delivery(delivery, output_root / _latest_rsi_manifest_name(market))
+        save_prepared_delivery(
+            delivery, output_root / _latest_rsi_manifest_name(market)
+        )
     return delivery
 
 
@@ -1320,7 +1315,9 @@ class QQSignalService(botpy.Client):
             print("QQ 筛选条件和扫描汇总已发送。", flush=True)
         total = len(prepared.images)
         for sent_count, (index, image) in enumerate(
-            enumerate(prepared.images[start_image_index - 1 :], start=start_image_index),
+            enumerate(
+                prepared.images[start_image_index - 1 :], start=start_image_index
+            ),
             start=1,
         ):
             if stop_event.is_set():

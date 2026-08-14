@@ -298,6 +298,7 @@ def render_wm_signal_chart(
     plt.close(figure)
     return destination
 
+
 def _indicator_engine(frame: pd.DataFrame) -> Rsi50SignalEngine:
     """Calculate MA20, MA30, and RSI solely for chart observation."""
     engine = Rsi50SignalEngine()

@@ -93,6 +93,7 @@ def test_scan_symbol_accepts_us_market() -> None:
 
     assert match is not None
     assert match.market == "us"
+    assert match.engine.config.ma_fast_min_daily_return == 0.01
 
 
 def test_render_signal_chart_marks_last_candle_with_entry_label(
@@ -113,7 +114,7 @@ def test_render_signal_chart_marks_last_candle_with_entry_label(
     assert signal_label.get_position()[0] == last_candle_x
 
 
-def test_us_market_uses_ma20_direction_without_angle_threshold() -> None:
+def test_us_market_rejects_weak_ma20_daily_return() -> None:
     closes = [91.64] * 35 + [
         99.13,
         102.79,
@@ -152,8 +153,7 @@ def test_us_market_uses_ma20_direction_without_angle_threshold() -> None:
     us_match = scan_symbol_frame("US.TEST", "Test", "Test", frame, market="us")
 
     assert a_share_match is None
-    assert us_match is not None
-    assert us_match.engine.config.ma_fast_min_angle_degrees is None
+    assert us_match is None
 
 
 def test_scan_symbol_rejects_unknown_market() -> None:

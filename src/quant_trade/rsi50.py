@@ -4,7 +4,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from math import atan, degrees
 
 
 class Direction(StrEnum):
@@ -14,26 +13,27 @@ class Direction(StrEnum):
     SHORT = "short"
 
 
-def moving_average_angle(
+def moving_average_daily_return(
     values: Sequence[float | None],
-    bars: int = 15,
+    days: int = 10,
 ) -> float | None:
-    """Return the regression angle in degrees for recent moving-average values."""
-    if bars < 2:
-        raise ValueError("bars must be at least 2")
-    if len(values) < bars:
+    """Return the average daily percent change of recent moving-average values."""
+    if days < 1:
+        raise ValueError("days must be at least 1")
+    needed = days + 1
+    if len(values) < needed:
         return None
-    window = values[-bars:]
+    window = values[-needed:]
     if any(value is None for value in window):
         return None
     numeric = [float(value) for value in window if value is not None]
-    x_mean = (bars - 1) / 2.0
-    y_mean = sum(numeric) / bars
-    numerator = sum(
-        (index - x_mean) * (value - y_mean) for index, value in enumerate(numeric)
+    return (
+        sum(
+            (numeric[index] - numeric[index - 1]) / numeric[index - 1]
+            for index in range(1, needed)
+        )
+        / days
     )
-    denominator = sum((index - x_mean) ** 2 for index in range(bars))
-    return degrees(atan(numerator / denominator))
 
 
 @dataclass(frozen=True)
@@ -77,8 +77,8 @@ class Rsi50Config:
     short_trigger_rsi_low: float = 42.0
     short_trigger_rsi_high: float = 50.0
     recent_rsi_days: int = 5
-    ma_fast_angle_bars: int = 15
-    ma_fast_min_angle_degrees: float | None = 20.0
+    ma_fast_slope_days: int = 10
+    ma_fast_min_daily_return: float | None = 0.01
 
     def __post_init__(self) -> None:
         positive_ints = (
@@ -103,12 +103,13 @@ class Rsi50Config:
             )
         if self.recent_rsi_days < 5:
             raise ValueError("recent_rsi_days must be at least 5")
-        if self.ma_fast_angle_bars < 2:
-            raise ValueError("ma_fast_angle_bars must be at least 2")
-        if self.ma_fast_min_angle_degrees is not None and not (
-            0.0 < self.ma_fast_min_angle_degrees < 90.0
+        if self.ma_fast_slope_days < 1:
+            raise ValueError("ma_fast_slope_days must be at least 1")
+        if (
+            self.ma_fast_min_daily_return is not None
+            and self.ma_fast_min_daily_return <= 0.0
         ):
-            raise ValueError("ma_fast_min_angle_degrees must be in (0, 90)")
+            raise ValueError("ma_fast_min_daily_return must be positive")
 
     def rsi_filter_for(self, direction: Direction) -> RsiDirectionFilter:
         """Return the configured RSI filter ranges for one direction."""
@@ -145,7 +146,7 @@ class SignalCalculationInput:
     atr: float
     fast_ma: float
     previous_fast_ma: float
-    fast_ma_angle: float | None
+    fast_ma_daily_return: float | None
     rsi_history: tuple[float | None, ...]
 
     @property
@@ -156,7 +157,7 @@ class SignalCalculationInput:
             "atr": self.atr,
             "fast_ma": self.fast_ma,
             "previous_fast_ma": self.previous_fast_ma,
-            "fast_ma_angle": self.fast_ma_angle,
+            "fast_ma_daily_return": self.fast_ma_daily_return,
             "rsi_history": self.rsi_history,
         }
 
@@ -239,7 +240,7 @@ def calculate_fast_ma_feature(
 ) -> FeatureCalculationResult:
     """Calculate the directional MA20 trend feature."""
     direction = inputs.direction
-    threshold = inputs.config.ma_fast_min_angle_degrees
+    threshold = inputs.config.ma_fast_min_daily_return
     if threshold is None:
         observed = inputs.fast_ma - inputs.previous_fast_ma
         passed = observed > 0.0 if direction is Direction.LONG else observed < 0.0
@@ -250,9 +251,9 @@ def calculate_fast_ma_feature(
             minimum=0.0 if direction is Direction.LONG else None,
             maximum=0.0 if direction is Direction.SHORT else None,
         )
-    observed = inputs.fast_ma_angle
+    observed = inputs.fast_ma_daily_return
     passed = observed is not None and (
-        observed > threshold if direction is Direction.LONG else observed < -threshold
+        observed >= threshold if direction is Direction.LONG else observed <= -threshold
     )
     return FeatureCalculationResult(
         feature=SignalFeature.FAST_MA_TREND,
@@ -472,9 +473,9 @@ class Rsi50SignalEngine:
             atr=atr,
             fast_ma=fast,
             previous_fast_ma=previous_fast,
-            fast_ma_angle=moving_average_angle(
+            fast_ma_daily_return=moving_average_daily_return(
                 self.fast_ma_values,
-                self.config.ma_fast_angle_bars,
+                self.config.ma_fast_slope_days,
             ),
             rsi_history=tuple(self.rsi_values),
         )

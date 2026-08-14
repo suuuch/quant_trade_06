@@ -19,7 +19,7 @@ from quant_trade.rsi50 import (
     calculate_rsi_latest_range_feature,
     calculate_rsi_trigger_feature,
     calculate_short_signal,
-    moving_average_angle,
+    moving_average_daily_return,
 )
 
 
@@ -75,11 +75,11 @@ def test_config_rejects_invalid_directional_rsi_ranges() -> None:
         Rsi50Config(recent_rsi_days=4)
 
 
-def test_config_rejects_invalid_ma20_angle_settings() -> None:
-    with pytest.raises(ValueError, match="ma_fast_angle_bars"):
-        Rsi50Config(ma_fast_angle_bars=1)
-    with pytest.raises(ValueError, match="ma_fast_min_angle_degrees"):
-        Rsi50Config(ma_fast_min_angle_degrees=90.0)
+def test_config_rejects_invalid_ma20_slope_settings() -> None:
+    with pytest.raises(ValueError, match="ma_fast_slope_days"):
+        Rsi50Config(ma_fast_slope_days=0)
+    with pytest.raises(ValueError, match="ma_fast_min_daily_return"):
+        Rsi50Config(ma_fast_min_daily_return=0.0)
 
 
 def test_config_returns_directional_rsi_filter_ranges() -> None:
@@ -98,13 +98,39 @@ def test_config_returns_directional_rsi_filter_ranges() -> None:
     ) == (42.0, 50.0)
 
 
-def test_moving_average_angle_uses_recent_fifteen_bar_regression() -> None:
-    rising = [float(value) for value in range(10, 25)]
-    falling = list(reversed(rising))
+def test_moving_average_daily_return_averages_ten_daily_changes() -> None:
+    rising = [100.0 * (1.01**index) for index in range(11)]
+    falling = [100.0 * (0.99**index) for index in range(11)]
 
-    assert moving_average_angle(rising) == pytest.approx(45.0)
-    assert moving_average_angle(falling) == pytest.approx(-45.0)
-    assert moving_average_angle([None, *rising[1:]]) is None
+    assert moving_average_daily_return(rising) == pytest.approx(0.01)
+    assert moving_average_daily_return(falling) == pytest.approx(-0.01)
+    assert moving_average_daily_return([None, *rising[1:]]) is None
+    assert moving_average_daily_return(rising[:-1]) is None
+
+
+def test_fast_ma_feature_accepts_one_percent_or_above() -> None:
+    bar = Bar(datetime(2026, 1, 1), 10.0, 11.0, 9.0, 10.0, 100.0)
+
+    def inputs(
+        direction: Direction,
+        daily_return: float,
+    ) -> SignalCalculationInput:
+        return SignalCalculationInput(
+            config=Rsi50Config(),
+            direction=direction,
+            bar=bar,
+            rsi=54.0,
+            atr=1.0,
+            fast_ma=101.0,
+            previous_fast_ma=100.0,
+            fast_ma_daily_return=daily_return,
+            rsi_history=(54.0,),
+        )
+
+    assert calculate_fast_ma_feature(inputs(Direction.LONG, 0.01)).passed is True
+    assert calculate_fast_ma_feature(inputs(Direction.LONG, 0.009)).passed is False
+    assert calculate_fast_ma_feature(inputs(Direction.SHORT, -0.01)).passed is True
+    assert calculate_fast_ma_feature(inputs(Direction.SHORT, -0.009)).passed is False
 
 
 def test_engine_rejects_out_of_order_bars() -> None:
@@ -129,11 +155,11 @@ def test_engine_emits_long_when_trend_and_rsi_ranges_match() -> None:
     assert all(50.0 <= signal.rsi <= 58.0 for signal in signals)
 
 
-def test_engine_rejects_long_when_ma20_angle_is_below_threshold() -> None:
+def test_engine_rejects_long_when_ma20_daily_return_is_below_threshold() -> None:
     closes = _trigger_rsi_45_to_55_closes()
     closes[-4:] = [86.0, 87.0, 88.0, 93.0]
 
-    engine = Rsi50SignalEngine(Rsi50Config(ma_fast_min_angle_degrees=80.0))
+    engine = Rsi50SignalEngine(Rsi50Config(ma_fast_min_daily_return=0.05))
     start = datetime(2025, 1, 1)
     for index, close in enumerate(closes):
         engine.on_bar(

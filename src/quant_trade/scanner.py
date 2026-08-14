@@ -20,7 +20,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
-from quant_trade.rsi50 import Bar, Direction, Rsi50Config, Rsi50SignalEngine, Signal
+from quant_trade.rsi50 import Bar, Direction, Rsi50SignalEngine, Signal
 
 Market = Literal["a", "us"]
 logger = logging.getLogger(__name__)
@@ -314,8 +314,7 @@ def scan_symbol_frame(
 ) -> SignalMatch | None:
     """Evaluate one sorted adjusted OHLCV frame on its latest bar."""
     _validate_market(market)
-    config = Rsi50Config(ma_fast_min_angle_degrees=None) if market == "us" else None
-    engine = Rsi50SignalEngine(config)
+    engine = Rsi50SignalEngine()
     latest_signal: Signal | None = None
     for index, (timestamp, row) in enumerate(frame.iterrows()):
         signal = engine.on_bar(
@@ -440,6 +439,7 @@ def render_signal_chart(
     figure.savefig(destination, dpi=100)
     plt.close(figure)
     return destination
+
 
 def render_signal_sheet(
     image_paths: list[Path],
