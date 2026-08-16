@@ -78,7 +78,7 @@ class Rsi50Config:
     short_trigger_rsi_high: float = 50.0
     recent_rsi_days: int = 5
     ma_fast_slope_days: int = 10
-    ma_fast_min_daily_return: float | None = 0.01
+    ma_fast_min_daily_return: float | None = 0.005
 
     def __post_init__(self) -> None:
         positive_ints = (

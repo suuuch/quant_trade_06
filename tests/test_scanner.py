@@ -93,7 +93,7 @@ def test_scan_symbol_accepts_us_market() -> None:
 
     assert match is not None
     assert match.market == "us"
-    assert match.engine.config.ma_fast_min_daily_return == 0.01
+    assert match.engine.config.ma_fast_min_daily_return == 0.005
 
 
 def test_render_signal_chart_marks_last_candle_with_entry_label(
