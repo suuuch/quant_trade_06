@@ -6,6 +6,7 @@ import asyncio
 import os
 import re
 import time
+import unicodedata
 from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -151,7 +152,7 @@ def format_filter_conditions(direction: str = "both", market: Market = "a") -> s
 
 def parse_wm_command(content: str) -> WmCommand | None:
     """Parse a W/M command with an optional A-share or US-share keyword."""
-    compact = "".join(content.upper().split())
+    compact = "".join(unicodedata.normalize("NFKC", content).upper().split())
     if "发送" not in compact:
         return None
     pattern: Literal["w", "m", "wm"]

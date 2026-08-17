@@ -87,6 +87,8 @@ def test_filter_conditions_describe_us_share_same_ma_rules() -> None:
     ("content", "market", "pattern", "history"),
     [
         ("发送A股W底", "a", "w", False),
+        ("发送美股W底", "us", "w", False),
+        ("发送美股Ｗ底", "us", "w", False),
         ("发送美股M顶", "us", "m", False),
         ("发送A股WM", "a", "wm", False),
         ("发送形态", "a", "wm", False),
@@ -140,6 +142,8 @@ def test_qq_command_parser_returns_atomic_command_types() -> None:
     assert isinstance(parse_qq_command("清理缓存"), ClearCacheCommand)
     assert isinstance(parse_qq_command("继续"), ContinueCommand)
     assert isinstance(parse_qq_command("发送W底"), WmCommand)
+    assert isinstance(parse_qq_command("发送美股Ｗ底"), WmCommand)
+    assert parse_qq_command("发送美股Ｗ底") == WmCommand("us", "w")
     assert isinstance(parse_qq_command("发送2026-07-25"), RsiCommand)
     assert parse_qq_command("随便看看") is None
 
