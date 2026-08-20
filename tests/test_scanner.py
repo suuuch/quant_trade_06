@@ -93,7 +93,7 @@ def test_scan_symbol_accepts_us_market() -> None:
 
     assert match is not None
     assert match.market == "us"
-    assert match.engine.config.ma_fast_min_daily_return == 0.005
+    assert match.engine.config.ma_fast_min_daily_return == 0.003
 
 
 def test_render_signal_chart_marks_last_candle_with_entry_label(
@@ -135,7 +135,7 @@ def test_us_market_rejects_weak_ma20_daily_return() -> None:
         104.46,
     ]
     base = 91.64
-    closes = [base + (close - base) * 0.6 for close in closes]
+    closes = [base + (close - base) * 0.56 for close in closes]
     index = pd.date_range("2025-01-01", periods=len(closes), freq="D")
     close = pd.Series(closes, index=index)
     frame = pd.DataFrame(

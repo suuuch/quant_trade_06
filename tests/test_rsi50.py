@@ -108,7 +108,7 @@ def test_moving_average_daily_return_averages_ten_daily_changes() -> None:
     assert moving_average_daily_return(rising[:-1]) is None
 
 
-def test_fast_ma_feature_accepts_half_percent_or_above() -> None:
+def test_fast_ma_feature_accepts_three_tenths_percent_or_above() -> None:
     bar = Bar(datetime(2026, 1, 1), 10.0, 11.0, 9.0, 10.0, 100.0)
 
     def inputs(
@@ -127,10 +127,10 @@ def test_fast_ma_feature_accepts_half_percent_or_above() -> None:
             rsi_history=(54.0,),
         )
 
-    assert calculate_fast_ma_feature(inputs(Direction.LONG, 0.005)).passed is True
-    assert calculate_fast_ma_feature(inputs(Direction.LONG, 0.004)).passed is False
-    assert calculate_fast_ma_feature(inputs(Direction.SHORT, -0.005)).passed is True
-    assert calculate_fast_ma_feature(inputs(Direction.SHORT, -0.004)).passed is False
+    assert calculate_fast_ma_feature(inputs(Direction.LONG, 0.003)).passed is True
+    assert calculate_fast_ma_feature(inputs(Direction.LONG, 0.002)).passed is False
+    assert calculate_fast_ma_feature(inputs(Direction.SHORT, -0.003)).passed is True
+    assert calculate_fast_ma_feature(inputs(Direction.SHORT, -0.002)).passed is False
 
 
 def test_engine_rejects_out_of_order_bars() -> None:
