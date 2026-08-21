@@ -83,12 +83,11 @@ def test_default_group_target_comes_from_environment(
 def test_a_share_summary_lists_active_filter_conditions() -> None:
     text = _filter_conditions("a", "both")
 
-    assert "MA20 过去 10 天平均每天上涨 0.3% 或以上" in text
-    assert "MA20 过去 10 天平均每天下跌 0.3% 或以上" in text
+    assert "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%" in text
+    assert "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%" in text
     assert "最新一天 RSI(14) 位于 42–58" in text
     assert "多头：最近 5 天 RSI 全部位于 50–58" in text
     assert "空头：最近 5 天 RSI 全部位于 42–50" in text
-    assert "MA30" not in text
     assert "W 底" not in text
     assert "M 顶" not in text
 
@@ -96,6 +95,6 @@ def test_a_share_summary_lists_active_filter_conditions() -> None:
 def test_us_share_summary_lists_same_filter_conditions() -> None:
     text = _filter_conditions("us", "both")
 
-    assert "MA20 过去 10 天平均每天上涨 0.3% 或以上" in text
-    assert "MA20 过去 10 天平均每天下跌 0.3% 或以上" in text
+    assert "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%" in text
+    assert "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%" in text
     assert "MA20 向上" not in text

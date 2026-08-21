@@ -65,19 +65,18 @@ def test_seconds_until_check_uses_today_then_next_day() -> None:
 def test_filter_conditions_include_current_a_share_rules() -> None:
     text = format_filter_conditions()
 
-    assert "MA20 过去 10 天平均每天上涨 0.3% 或以上" in text
-    assert "MA20 过去 10 天平均每天下跌 0.3% 或以上" in text
+    assert "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%" in text
+    assert "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%" in text
     assert "最新一天 RSI(14) 位于 42–58" in text
     assert "多头：最近 5 天 RSI 全部位于 50–58" in text
     assert "空头：最近 5 天 RSI 全部位于 42–50" in text
-    assert "MA30" not in text
 
 
 def test_filter_conditions_describe_us_share_same_ma_rules() -> None:
     text = format_filter_conditions(market="us")
 
-    assert "MA20 过去 10 天平均每天上涨 0.3% 或以上" in text
-    assert "MA20 过去 10 天平均每天下跌 0.3% 或以上" in text
+    assert "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%" in text
+    assert "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%" in text
     assert "多头：最近 5 天 RSI 全部位于 50–58" in text
     assert "空头：最近 5 天 RSI 全部位于 42–50" in text
     assert "MA20 向上" not in text

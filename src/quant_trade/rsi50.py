@@ -147,6 +147,7 @@ class SignalCalculationInput:
     fast_ma: float
     previous_fast_ma: float
     fast_ma_daily_return: float | None
+    slow_ma_daily_return: float | None
     rsi_history: tuple[float | None, ...]
 
     @property
@@ -158,6 +159,7 @@ class SignalCalculationInput:
             "fast_ma": self.fast_ma,
             "previous_fast_ma": self.previous_fast_ma,
             "fast_ma_daily_return": self.fast_ma_daily_return,
+            "slow_ma_daily_return": self.slow_ma_daily_return,
             "rsi_history": self.rsi_history,
         }
 
@@ -202,7 +204,7 @@ class SignalCalculationResult:
 
     @property
     def fast_trend_pass(self) -> bool:
-        """Return the MA20 feature result."""
+        """Return the MA20/MA30 trend feature result."""
         return self.feature(SignalFeature.FAST_MA_TREND).passed
 
     @property
@@ -235,10 +237,23 @@ def calculate_rsi_latest_range_feature(
     )
 
 
+def _ma_daily_return_passes(
+    value: float | None,
+    *,
+    direction: Direction,
+    threshold: float,
+) -> bool:
+    if value is None:
+        return False
+    if direction is Direction.LONG:
+        return value > threshold
+    return value < -threshold
+
+
 def calculate_fast_ma_feature(
     inputs: SignalCalculationInput,
 ) -> FeatureCalculationResult:
-    """Calculate the directional MA20 trend feature."""
+    """Calculate the directional MA20/MA30 trend feature."""
     direction = inputs.direction
     threshold = inputs.config.ma_fast_min_daily_return
     if threshold is None:
@@ -251,9 +266,27 @@ def calculate_fast_ma_feature(
             minimum=0.0 if direction is Direction.LONG else None,
             maximum=0.0 if direction is Direction.SHORT else None,
         )
-    observed = inputs.fast_ma_daily_return
-    passed = observed is not None and (
-        observed >= threshold if direction is Direction.LONG else observed <= -threshold
+    candidates = [
+        value
+        for value in (
+            inputs.fast_ma_daily_return,
+            inputs.slow_ma_daily_return,
+        )
+        if value is not None
+    ]
+    observed = (
+        None
+        if not candidates
+        else (max(candidates) if direction is Direction.LONG else min(candidates))
+    )
+    passed = _ma_daily_return_passes(
+        inputs.fast_ma_daily_return,
+        direction=direction,
+        threshold=threshold,
+    ) or _ma_daily_return_passes(
+        inputs.slow_ma_daily_return,
+        direction=direction,
+        threshold=threshold,
     )
     return FeatureCalculationResult(
         feature=SignalFeature.FAST_MA_TREND,
@@ -261,6 +294,10 @@ def calculate_fast_ma_feature(
         observed=observed,
         minimum=threshold if direction is Direction.LONG else None,
         maximum=-threshold if direction is Direction.SHORT else None,
+        details={
+            "fast_ma_daily_return": inputs.fast_ma_daily_return,
+            "slow_ma_daily_return": inputs.slow_ma_daily_return,
+        },
     )
 
 
@@ -475,6 +512,10 @@ class Rsi50SignalEngine:
             previous_fast_ma=previous_fast,
             fast_ma_daily_return=moving_average_daily_return(
                 self.fast_ma_values,
+                self.config.ma_fast_slope_days,
+            ),
+            slow_ma_daily_return=moving_average_daily_return(
+                self.slow_ma_values,
                 self.config.ma_fast_slope_days,
             ),
             rsi_history=tuple(self.rsi_values),

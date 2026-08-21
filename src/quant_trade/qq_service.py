@@ -132,8 +132,12 @@ def format_filter_conditions(direction: str = "both", market: Market = "a") -> s
         f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
     pct = (config.ma_fast_min_daily_return or 0.0) * 100
-    long_ma = f"MA20 过去 {config.ma_fast_slope_days} 天平均每天上涨 {pct:g}% 或以上"
-    short_ma = f"MA20 过去 {config.ma_fast_slope_days} 天平均每天下跌 {pct:g}% 或以上"
+    long_ma = (
+        f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天上涨大于 {pct:g}%"
+    )
+    short_ma = (
+        f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天下跌大于 {pct:g}%"
+    )
     lines = ["RSI 顺势交易筛选条件（日线）：", common]
     if direction in {"long", "both"}:
         rsi_filter = config.rsi_filter_for(Direction.LONG)

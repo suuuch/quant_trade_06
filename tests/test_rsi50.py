@@ -108,12 +108,14 @@ def test_moving_average_daily_return_averages_ten_daily_changes() -> None:
     assert moving_average_daily_return(rising[:-1]) is None
 
 
-def test_fast_ma_feature_accepts_three_tenths_percent_or_above() -> None:
+def test_fast_ma_feature_accepts_ma20_or_ma30_above_threshold() -> None:
     bar = Bar(datetime(2026, 1, 1), 10.0, 11.0, 9.0, 10.0, 100.0)
 
     def inputs(
         direction: Direction,
-        daily_return: float,
+        *,
+        fast_return: float | None,
+        slow_return: float | None,
     ) -> SignalCalculationInput:
         return SignalCalculationInput(
             config=Rsi50Config(),
@@ -123,14 +125,53 @@ def test_fast_ma_feature_accepts_three_tenths_percent_or_above() -> None:
             atr=1.0,
             fast_ma=101.0,
             previous_fast_ma=100.0,
-            fast_ma_daily_return=daily_return,
+            fast_ma_daily_return=fast_return,
+            slow_ma_daily_return=slow_return,
             rsi_history=(54.0,),
         )
 
-    assert calculate_fast_ma_feature(inputs(Direction.LONG, 0.003)).passed is True
-    assert calculate_fast_ma_feature(inputs(Direction.LONG, 0.002)).passed is False
-    assert calculate_fast_ma_feature(inputs(Direction.SHORT, -0.003)).passed is True
-    assert calculate_fast_ma_feature(inputs(Direction.SHORT, -0.002)).passed is False
+    assert (
+        calculate_fast_ma_feature(
+            inputs(Direction.LONG, fast_return=0.004, slow_return=0.001)
+        ).passed
+        is True
+    )
+    assert (
+        calculate_fast_ma_feature(
+            inputs(Direction.LONG, fast_return=0.001, slow_return=0.004)
+        ).passed
+        is True
+    )
+    assert (
+        calculate_fast_ma_feature(
+            inputs(Direction.LONG, fast_return=0.003, slow_return=0.003)
+        ).passed
+        is False
+    )
+    assert (
+        calculate_fast_ma_feature(
+            inputs(Direction.LONG, fast_return=0.002, slow_return=0.002)
+        ).passed
+        is False
+    )
+    assert (
+        calculate_fast_ma_feature(
+            inputs(Direction.SHORT, fast_return=-0.004, slow_return=-0.001)
+        ).passed
+        is True
+    )
+    assert (
+        calculate_fast_ma_feature(
+            inputs(Direction.SHORT, fast_return=-0.001, slow_return=-0.004)
+        ).passed
+        is True
+    )
+    assert (
+        calculate_fast_ma_feature(
+            inputs(Direction.SHORT, fast_return=-0.003, slow_return=-0.003)
+        ).passed
+        is False
+    )
 
 
 def test_engine_rejects_out_of_order_bars() -> None:
