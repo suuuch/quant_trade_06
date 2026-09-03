@@ -2,15 +2,35 @@
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from enum import StrEnum
 
+from quant_trade import config as app_config
+from quant_trade.bars import Bar
+from quant_trade.indicators import WilderAtrState, simple_moving_average
+from quant_trade.models import Direction, RsiTrendSignal
 
-class Direction(StrEnum):
-    """Supported trade directions."""
+# Compatibility re-exports.
+__all__ = [
+    "Bar",
+    "Direction",
+    "FeatureCalculationResult",
+    "Rsi50Config",
+    "Rsi50SignalEngine",
+    "RsiDirectionFilter",
+    "Signal",
+    "SignalCalculationInput",
+    "SignalCalculationResult",
+    "SignalFeature",
+    "calculate_fast_ma_feature",
+    "calculate_long_signal",
+    "calculate_rsi_latest_range_feature",
+    "calculate_rsi_trigger_feature",
+    "calculate_short_signal",
+    "moving_average_daily_return",
+]
 
-    LONG = "long"
-    SHORT = "short"
+# Compatibility aliases.
+Signal = RsiTrendSignal
 
 
 def moving_average_daily_return(
@@ -37,24 +57,6 @@ def moving_average_daily_return(
 
 
 @dataclass(frozen=True)
-class Bar:
-    """One completed daily OHLCV bar."""
-
-    timestamp: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float = 0.0
-
-    def __post_init__(self) -> None:
-        if self.high < max(self.open, self.close, self.low):
-            raise ValueError("high must be the greatest OHLC value")
-        if self.low > min(self.open, self.close, self.high):
-            raise ValueError("low must be the smallest OHLC value")
-
-
-@dataclass(frozen=True)
 class RsiDirectionFilter:
     """RSI ranges required for one trade direction."""
 
@@ -66,19 +68,19 @@ class RsiDirectionFilter:
 class Rsi50Config:
     """Parameters fixed by the daily RSI trend-following strategy document."""
 
-    rsi_period: int = 14
-    ma_fast: int = 20
-    ma_slow: int = 30
-    atr_period: int = 14
-    rsi_zone_low: float = 42.0
-    rsi_zone_high: float = 58.0
-    long_trigger_rsi_low: float = 50.0
-    long_trigger_rsi_high: float = 58.0
-    short_trigger_rsi_low: float = 42.0
-    short_trigger_rsi_high: float = 50.0
-    recent_rsi_days: int = 5
-    ma_fast_slope_days: int = 10
-    ma_fast_min_daily_return: float | None = 0.003
+    rsi_period: int = app_config.RSI_PERIOD
+    ma_fast: int = app_config.MA_FAST
+    ma_slow: int = app_config.MA_SLOW
+    atr_period: int = app_config.ATR_PERIOD
+    rsi_zone_low: float = app_config.RSI_ZONE_LOW
+    rsi_zone_high: float = app_config.RSI_ZONE_HIGH
+    long_trigger_rsi_low: float = app_config.LONG_TRIGGER_RSI_LOW
+    long_trigger_rsi_high: float = app_config.LONG_TRIGGER_RSI_HIGH
+    short_trigger_rsi_low: float = app_config.SHORT_TRIGGER_RSI_LOW
+    short_trigger_rsi_high: float = app_config.SHORT_TRIGGER_RSI_HIGH
+    recent_rsi_days: int = app_config.RECENT_RSI_DAYS
+    ma_fast_slope_days: int = app_config.MA_FAST_SLOPE_DAYS
+    ma_fast_min_daily_return: float | None = app_config.MA_FAST_MIN_DAILY_RETURN
 
     def __post_init__(self) -> None:
         positive_ints = (
@@ -122,17 +124,6 @@ class Rsi50Config:
             trigger_low=self.short_trigger_rsi_low,
             trigger_high=self.short_trigger_rsi_high,
         )
-
-
-@dataclass(frozen=True)
-class Signal:
-    """A trade signal produced on a completed daily bar."""
-
-    direction: Direction
-    timestamp: datetime
-    close: float
-    rsi: float
-    atr: float
 
 
 @dataclass(frozen=True)
@@ -382,7 +373,7 @@ class Rsi50SignalEngine:
         self.slow_ma_values: list[float | None] = []
         self._average_gain: float | None = None
         self._average_loss: float | None = None
-        self._average_true_range: float | None = None
+        self._atr_state = WilderAtrState(self.config.atr_period)
 
     def on_bar(self, bar: Bar) -> Signal | None:
         """Process one completed daily bar and return at most one signal."""
@@ -395,16 +386,10 @@ class Rsi50SignalEngine:
 
     def _update_indicators(self) -> None:
         closes = [bar.close for bar in self.bars]
-        self.fast_ma_values.append(self._simple_average(closes, self.config.ma_fast))
-        self.slow_ma_values.append(self._simple_average(closes, self.config.ma_slow))
+        self.fast_ma_values.append(simple_moving_average(closes, self.config.ma_fast))
+        self.slow_ma_values.append(simple_moving_average(closes, self.config.ma_slow))
         self.rsi_values.append(self._next_rsi())
-        self.atr_values.append(self._next_atr())
-
-    @staticmethod
-    def _simple_average(values: list[float], period: int) -> float | None:
-        if len(values) < period:
-            return None
-        return sum(values[-period:]) / period
+        self.atr_values.append(self._atr_state.update(self.bars))
 
     def _next_rsi(self) -> float | None:
         period = self.config.rsi_period
@@ -431,43 +416,6 @@ class Rsi50SignalEngine:
             return 100.0
         relative_strength = self._average_gain / self._average_loss
         return 100.0 - 100.0 / (1.0 + relative_strength)
-
-    def _next_atr(self) -> float | None:
-        period = self.config.atr_period
-        bar = self.bars[-1]
-        if len(self.bars) == 1:
-            true_range = bar.high - bar.low
-        else:
-            previous_close = self.bars[-2].close
-            true_range = max(
-                bar.high - bar.low,
-                abs(bar.high - previous_close),
-                abs(bar.low - previous_close),
-            )
-
-        if len(self.bars) < period:
-            return None
-        if self._average_true_range is None:
-            true_ranges: list[float] = []
-            for index in range(period):
-                current = self.bars[index]
-                if index == 0:
-                    true_ranges.append(current.high - current.low)
-                    continue
-                previous_close = self.bars[index - 1].close
-                true_ranges.append(
-                    max(
-                        current.high - current.low,
-                        abs(current.high - previous_close),
-                        abs(current.low - previous_close),
-                    )
-                )
-            self._average_true_range = sum(true_ranges) / period
-        else:
-            self._average_true_range = (
-                self._average_true_range * (period - 1) + true_range
-            ) / period
-        return self._average_true_range
 
     def _evaluate_signal(self) -> Signal | None:
         for direction in (Direction.LONG, Direction.SHORT):
@@ -528,6 +476,6 @@ class Rsi50SignalEngine:
             direction=inputs.direction,
             timestamp=inputs.bar.timestamp,
             close=inputs.bar.close,
-            rsi=inputs.rsi,
             atr=inputs.atr,
+            rsi=inputs.rsi,
         )

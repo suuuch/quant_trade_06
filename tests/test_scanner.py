@@ -18,6 +18,7 @@ from quant_trade.scanner import (
     DataFreshnessError,
     MarketDataStatus,
     _evaluate_rows,
+    apply_overflow_ma_threshold,
     render_signal_chart,
     render_signal_sheet,
     scan_symbol_frame,
@@ -191,11 +192,11 @@ def test_us_database_rows_accept_decimal_adjustment_factors() -> None:
     frame = _latest_long_frame()
     rows = _database_rows(frame)
 
-    match, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
+    matches, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
 
     assert stale is False
-    assert match is not None
-    assert match.symbol == "US.AAPL"
+    assert len(matches) == 1
+    assert matches[0].symbol == "US.AAPL"
 
 
 def test_us_database_rows_skip_invalid_historical_ohlc(
@@ -208,10 +209,10 @@ def test_us_database_rows_skip_invalid_historical_ohlc(
     invalid[6] = 21.0
     rows[0] = tuple(invalid)
 
-    match, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
+    matches, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
 
     assert stale is False
-    assert match is not None
+    assert len(matches) == 1
     assert "skipping 1 invalid OHLC bar(s) for US.AAPL" in caplog.text
 
 
@@ -223,10 +224,10 @@ def test_us_database_rows_treat_invalid_latest_ohlc_as_stale() -> None:
     invalid[6] = 21.0
     rows[-1] = tuple(invalid)
 
-    match, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
+    matches, stale = _evaluate_rows(rows, frame.index[-1].date(), "us")
 
     assert stale is True
-    assert match is None
+    assert matches == []
 
 
 def _database_rows(frame: pd.DataFrame) -> list[tuple[object, ...]]:
@@ -331,6 +332,69 @@ def test_delivery_limit_keeps_highest_ranked_matches() -> None:
     selected = select_matches_for_delivery(ranked, max_send=2)
 
     assert [match.symbol for match in selected] == ["000001.SZ", "000002.SZ"]
+
+
+def test_apply_overflow_ma_threshold_keeps_batch_within_limit() -> None:
+    frame = _latest_long_frame()
+    matches = [
+        match
+        for index in range(100)
+        if (
+            match := scan_symbol_frame(
+                f"{index:06d}.SZ",
+                str(index),
+                "Test",
+                frame,
+            )
+        )
+        is not None
+    ]
+    assert len(matches) == 100
+    assert apply_overflow_ma_threshold(matches) == matches
+
+
+def test_apply_overflow_ma_threshold_retains_strong_slope_when_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "quant_trade.scanner.app_config.MA_FAST_OVERFLOW_MATCH_LIMIT",
+        1,
+    )
+    frame = _latest_long_frame()
+    matches = [
+        match
+        for symbol in ("000001.SZ", "000002.SZ")
+        if (match := scan_symbol_frame(symbol, "Test", "Test", frame)) is not None
+    ]
+    assert len(matches) == 2
+
+    tightened = apply_overflow_ma_threshold(matches)
+
+    assert len(tightened) == 2
+    for match in tightened:
+        assert match.engine is not None
+        assert match.engine.config.ma_fast_min_daily_return == pytest.approx(0.006)
+
+
+def test_apply_overflow_ma_threshold_drops_weak_slope_when_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "quant_trade.scanner.app_config.MA_FAST_OVERFLOW_MATCH_LIMIT",
+        1,
+    )
+    monkeypatch.setattr(
+        "quant_trade.scanner.app_config.MA_FAST_OVERFLOW_MIN_DAILY_RETURN",
+        0.5,
+    )
+    frame = _latest_long_frame()
+    matches = [
+        match
+        for symbol in ("000001.SZ", "000002.SZ")
+        if (match := scan_symbol_frame(symbol, "Test", "Test", frame)) is not None
+    ]
+    assert len(matches) == 2
+    assert apply_overflow_ma_threshold(matches) == []
 
 
 def test_zero_delivery_limit_explicitly_allows_all_matches() -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import duckdb
 
-from quant_trade.rsi50 import Direction
+from quant_trade.models import Direction
 
 
 @dataclass(frozen=True)

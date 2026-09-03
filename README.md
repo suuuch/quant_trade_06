@@ -65,6 +65,10 @@ PG_USER=admin
 PG_PASSWORD=changeme
 ```
 
+策略参数（RSI 区间、均线斜率阈值等）集中在
+[`src/quant_trade/config.py`](src/quant_trade/config.py)，例如把
+`MA_FAST_MIN_DAILY_RETURN_PCT` 从 `0.3` 改成其他值即可调整「每天 0.3%」门槛。
+
 需要 QQ 功能时继续配置：
 
 ```dotenv

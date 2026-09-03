@@ -12,6 +12,7 @@ from typing import cast
 import pytest
 
 from quant_trade.qq_bot import QQTargetType
+from quant_trade.qq_service import format_filter_conditions
 
 _SCRIPT_PATH = Path(__file__).parents[1] / "scripts" / "scan_rsi50_to_qq.py"
 _SPEC = importlib.util.spec_from_file_location("scan_rsi50_to_qq", _SCRIPT_PATH)
@@ -23,10 +24,6 @@ parse_args = cast(Callable[[], argparse.Namespace], _MODULE.parse_args)
 _default_target_id = cast(
     Callable[[QQTargetType], str],
     _MODULE._default_target_id,
-)
-_filter_conditions = cast(
-    Callable[[str, str], str],
-    _MODULE._filter_conditions,
 )
 _LISTENER_SCRIPT_PATH = (
     Path(__file__).parents[1] / "scripts" / "run_qq_signal_listener.py"
@@ -81,10 +78,16 @@ def test_default_group_target_comes_from_environment(
 
 
 def test_a_share_summary_lists_active_filter_conditions() -> None:
-    text = _filter_conditions("a", "both")
+    text = format_filter_conditions("both", "a")
 
-    assert "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%" in text
-    assert "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%" in text
+    assert (
+        "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%（命中超过 100 只时升至 0.6%）"
+        in text
+    )
+    assert (
+        "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%（命中超过 100 只时升至 0.6%）"
+        in text
+    )
     assert "最新一天 RSI(14) 位于 42–58" in text
     assert "多头：最近 5 天 RSI 全部位于 50–58" in text
     assert "空头：最近 5 天 RSI 全部位于 42–50" in text
@@ -93,8 +96,14 @@ def test_a_share_summary_lists_active_filter_conditions() -> None:
 
 
 def test_us_share_summary_lists_same_filter_conditions() -> None:
-    text = _filter_conditions("us", "both")
+    text = format_filter_conditions("both", "us")
 
-    assert "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%" in text
-    assert "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%" in text
+    assert (
+        "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%（命中超过 100 只时升至 0.6%）"
+        in text
+    )
+    assert (
+        "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%（命中超过 100 只时升至 0.6%）"
+        in text
+    )
     assert "MA20 向上" not in text

@@ -1,5 +1,12 @@
 """RSI trend-following strategy package."""
 
+from quant_trade.bars import Bar
+from quant_trade.models import (
+    Direction,
+    PatternSignal,
+    RsiTrendSignal,
+    WmNecklineSignal,
+)
 from quant_trade.qq_bot import (
     QQBotClient,
     QQBotError,
@@ -7,8 +14,6 @@ from quant_trade.qq_bot import (
     send_qq_group_message,
 )
 from quant_trade.rsi50 import (
-    Bar,
-    Direction,
     Rsi50Config,
     Rsi50SignalEngine,
     Signal,
@@ -17,11 +22,14 @@ from quant_trade.rsi50 import (
 __all__ = [
     "Bar",
     "Direction",
+    "PatternSignal",
     "Rsi50Config",
     "Rsi50SignalEngine",
+    "RsiTrendSignal",
     "QQBotClient",
     "QQBotError",
     "Signal",
+    "WmNecklineSignal",
     "send_qq_bot_message",
     "send_qq_group_message",
 ]

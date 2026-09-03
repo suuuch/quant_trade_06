@@ -11,7 +11,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from quant_trade.qq_bot import QQBotClient, QQBotError, QQTargetType
-from quant_trade.rsi50 import Direction, Rsi50Config
+from quant_trade.qq_service import format_filter_conditions
+from quant_trade.rsi50 import Direction
 from quant_trade.scanner import (
     DatabaseSettings,
     DataFreshnessError,
@@ -129,7 +130,7 @@ def main() -> None:
         f"本次{'发送' if args.send else '选择'} {len(rendered)} 只，"
         f"图片消息 {len(delivery_images)} 条，"
         f"数据滞后 {data_age_days} 天\n\n"
-        f"{_filter_conditions(args.market, args.direction)}"
+        f"{format_filter_conditions(args.direction, args.market)}"
     )
     print(summary)
     print(f"图片目录: {output_dir}")
@@ -239,36 +240,6 @@ def _format_market_cap(value: float | None, market: str = "a") -> str:
 
 def _market_label(market: str) -> str:
     return "美股" if market == "us" else "A股"
-
-
-def _filter_conditions(market: str, direction: str) -> str:
-    """Describe the active strategy conditions for the QQ summary."""
-    config = Rsi50Config()
-    common = (
-        f"共同：最新一天 RSI({config.rsi_period}) 位于 "
-        f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
-    )
-    pct = (config.ma_fast_min_daily_return or 0.0) * 100
-    long_ma = (
-        f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天上涨大于 {pct:g}%"
-    )
-    short_ma = (
-        f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天下跌大于 {pct:g}%"
-    )
-    lines = ["RSI 顺势交易筛选条件（日线）：", common]
-    if direction in {"long", "both"}:
-        rsi_filter = config.rsi_filter_for(Direction.LONG)
-        lines.append(
-            f"多头：最近 {config.recent_rsi_days} 天 RSI 全部位于 "
-            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；{long_ma}。"
-        )
-    if direction in {"short", "both"}:
-        rsi_filter = config.rsi_filter_for(Direction.SHORT)
-        lines.append(
-            f"空头：最近 {config.recent_rsi_days} 天 RSI 全部位于 "
-            f"{rsi_filter.trigger_low:g}–{rsi_filter.trigger_high:g}；{short_ma}。"
-        )
-    return "\n".join(lines)
 
 
 def _default_target_id(target_type: QQTargetType) -> str:

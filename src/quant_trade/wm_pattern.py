@@ -1,23 +1,28 @@
 """Independent W-bottom and M-top neckline entry signals."""
 
 from dataclasses import dataclass
-from datetime import datetime
 
-from quant_trade.rsi50 import Bar, Direction
+from quant_trade import config as app_config
+from quant_trade.bars import Bar
+from quant_trade.indicators import WilderAtrState
+from quant_trade.models import Direction, WmNecklineSignal
+
+# Compatibility aliases / re-exports.
+WmSignal = WmNecklineSignal
 
 
 @dataclass(frozen=True)
 class WmPatternConfig:
     """Parameters for confirmed daily W/M patterns and entries."""
 
-    atr_period: int = 14
-    pivot_left: int = 3
-    pivot_right: int = 3
-    min_pattern_distance: int = 5
-    max_pattern_distance: int = 30
-    max_peak_difference_atr: float = 1.0
-    min_middle_retracement_atr: float = 1.0
-    break_buffer_atr: float = 0.1
+    atr_period: int = app_config.WM_ATR_PERIOD
+    pivot_left: int = app_config.WM_PIVOT_LEFT
+    pivot_right: int = app_config.WM_PIVOT_RIGHT
+    min_pattern_distance: int = app_config.WM_MIN_PATTERN_DISTANCE
+    max_pattern_distance: int = app_config.WM_MAX_PATTERN_DISTANCE
+    max_peak_difference_atr: float = app_config.WM_MAX_PEAK_DIFFERENCE_ATR
+    min_middle_retracement_atr: float = app_config.WM_MIN_MIDDLE_RETRACEMENT_ATR
+    break_buffer_atr: float = app_config.WM_BREAK_BUFFER_ATR
 
     def __post_init__(self) -> None:
         positive_ints = (
@@ -60,19 +65,6 @@ class WmPattern:
     neckline: float
 
 
-@dataclass(frozen=True)
-class WmSignal:
-    """A neckline entry signal emitted on a completed daily bar."""
-
-    direction: Direction
-    timestamp: datetime
-    close: float
-    atr: float
-    neckline: float
-    first_pivot_index: int
-    second_pivot_index: int
-
-
 def is_pivot_high(
     highs: list[float], index: int, left: int = 3, right: int = 3
 ) -> bool:
@@ -104,7 +96,7 @@ class WmPatternEngine:
         self.atr_values: list[float | None] = []
         self.pivot_highs: list[Pivot] = []
         self.pivot_lows: list[Pivot] = []
-        self._average_true_range: float | None = None
+        self._atr_state = WilderAtrState(self.config.atr_period)
         self._emitted_patterns: set[tuple[Direction, int, int]] = set()
 
     def on_bar(self, bar: Bar) -> tuple[WmSignal, ...]:
@@ -112,7 +104,7 @@ class WmPatternEngine:
         if self.bars and bar.timestamp <= self.bars[-1].timestamp:
             raise ValueError("bars must be supplied in strictly increasing order")
         self.bars.append(bar)
-        self.atr_values.append(self._next_atr())
+        self.atr_values.append(self._atr_state.update(self.bars))
         self._confirm_pivot()
 
         signals: list[WmSignal] = []
@@ -190,39 +182,3 @@ class WmPatternEngine:
             self.pivot_highs.append(Pivot(candidate, highs[candidate], atr))
         if is_pivot_low(lows, candidate, config.pivot_left, config.pivot_right):
             self.pivot_lows.append(Pivot(candidate, lows[candidate], atr))
-
-    def _next_atr(self) -> float | None:
-        period = self.config.atr_period
-        bar = self.bars[-1]
-        if len(self.bars) == 1:
-            true_range = bar.high - bar.low
-        else:
-            previous_close = self.bars[-2].close
-            true_range = max(
-                bar.high - bar.low,
-                abs(bar.high - previous_close),
-                abs(bar.low - previous_close),
-            )
-        if len(self.bars) < period:
-            return None
-        if self._average_true_range is None:
-            true_ranges = [
-                self._true_range(index) for index in range(self.config.atr_period)
-            ]
-            self._average_true_range = sum(true_ranges) / period
-        else:
-            self._average_true_range = (
-                self._average_true_range * (period - 1) + true_range
-            ) / period
-        return self._average_true_range
-
-    def _true_range(self, index: int) -> float:
-        bar = self.bars[index]
-        if index == 0:
-            return bar.high - bar.low
-        previous_close = self.bars[index - 1].close
-        return max(
-            bar.high - bar.low,
-            abs(bar.high - previous_close),
-            abs(bar.low - previous_close),
-        )

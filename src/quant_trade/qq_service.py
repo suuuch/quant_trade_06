@@ -21,6 +21,7 @@ import duckdb
 import psycopg
 from botpy.message import C2CMessage, GroupMessage
 
+from quant_trade import config as app_config
 from quant_trade.delivery_store import (
     DeliveryImage,
     DeliveryMetadata,
@@ -34,8 +35,9 @@ from quant_trade.delivery_store import (
     save_prepared_delivery,
     save_signal_results_to_duckdb,
 )
+from quant_trade.models import Direction
 from quant_trade.qq_bot import QQBotClient, QQBotError, QQTargetType
-from quant_trade.rsi50 import Direction, Rsi50Config
+from quant_trade.rsi50 import Rsi50Config
 from quant_trade.scanner import (
     DatabaseSettings,
     Market,
@@ -47,6 +49,7 @@ from quant_trade.scanner import (
     scan_database_latest,
     scan_database_on_date,
 )
+from quant_trade.wm_pattern import WmPatternConfig
 from quant_trade.wm_scanner import (
     WmSignalMatch,
     render_wm_signal_chart,
@@ -132,11 +135,16 @@ def format_filter_conditions(direction: str = "both", market: Market = "a") -> s
         f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
     pct = (config.ma_fast_min_daily_return or 0.0) * 100
+    overflow_pct = app_config.MA_FAST_OVERFLOW_MIN_DAILY_RETURN_PCT
+    overflow_limit = app_config.MA_FAST_OVERFLOW_MATCH_LIMIT
+    ma_note = f"（命中超过 {overflow_limit} 只时升至 {overflow_pct:g}%）"
     long_ma = (
-        f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天上涨大于 {pct:g}%"
+        f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天上涨大于 "
+        f"{pct:g}%{ma_note}"
     )
     short_ma = (
-        f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天下跌大于 {pct:g}%"
+        f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天下跌大于 "
+        f"{pct:g}%{ma_note}"
     )
     lines = ["RSI 顺势交易筛选条件（日线）：", common]
     if direction in {"long", "both"}:
@@ -176,13 +184,17 @@ def parse_wm_command(content: str) -> WmCommand | None:
 
 def format_wm_conditions(pattern: Literal["w", "m", "wm"]) -> str:
     """Describe the independent W/M entry conditions."""
+    config = WmPatternConfig()
     pattern_label = {"w": "W 底", "m": "M 顶", "wm": "W 底及 M 顶"}[pattern]
     return (
         f"筛选条件（日线，{pattern_label}）：\n"
-        "摆动点采用 3/3；两个同类摆动点间距 5–30 Bar；"
-        "两端价差 ≤ 1 ATR；中间反弹/回撤 ≥ 1 ATR；"
-        "W 底要求收盘 > 颈线 + 0.1 ATR，"
-        "M 顶要求收盘 < 颈线 - 0.1 ATR。\n"
+        f"摆动点采用 {config.pivot_left}/{config.pivot_right}；"
+        f"两个同类摆动点间距 {config.min_pattern_distance}–"
+        f"{config.max_pattern_distance} Bar；"
+        f"两端价差 ≤ {config.max_peak_difference_atr:g} ATR；"
+        f"中间反弹/回撤 ≥ {config.min_middle_retracement_atr:g} ATR；"
+        f"W 底要求收盘 > 颈线 + {config.break_buffer_atr:g} ATR，"
+        f"M 顶要求收盘 < 颈线 - {config.break_buffer_atr:g} ATR。\n"
         "该策略独立运行，不叠加 RSI 顺势交易或均线条件。"
     )
 
