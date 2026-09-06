@@ -350,7 +350,9 @@ def test_apply_overflow_ma_threshold_keeps_batch_within_limit() -> None:
         is not None
     ]
     assert len(matches) == 100
-    assert apply_overflow_ma_threshold(matches) == matches
+    kept, threshold = apply_overflow_ma_threshold(matches)
+    assert kept == matches
+    assert threshold == pytest.approx(0.003)
 
 
 def test_apply_overflow_ma_threshold_retains_strong_slope_when_over_limit(
@@ -368,9 +370,10 @@ def test_apply_overflow_ma_threshold_retains_strong_slope_when_over_limit(
     ]
     assert len(matches) == 2
 
-    tightened = apply_overflow_ma_threshold(matches)
+    tightened, threshold = apply_overflow_ma_threshold(matches)
 
     assert len(tightened) == 2
+    assert threshold == pytest.approx(0.006)
     for match in tightened:
         assert match.engine is not None
         assert match.engine.config.ma_fast_min_daily_return == pytest.approx(0.006)
@@ -394,7 +397,9 @@ def test_apply_overflow_ma_threshold_drops_weak_slope_when_over_limit(
         if (match := scan_symbol_frame(symbol, "Test", "Test", frame)) is not None
     ]
     assert len(matches) == 2
-    assert apply_overflow_ma_threshold(matches) == []
+    tightened, threshold = apply_overflow_ma_threshold(matches)
+    assert tightened == []
+    assert threshold == pytest.approx(0.5)
 
 
 def test_zero_delivery_limit_explicitly_allows_all_matches() -> None:

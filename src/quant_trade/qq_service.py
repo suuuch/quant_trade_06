@@ -127,17 +127,33 @@ def _market_label(market: Market) -> str:
     return "美股" if market == "us" else "A股"
 
 
-def format_filter_conditions(direction: str = "both", market: Market = "a") -> str:
-    """Describe the active strategy conditions for a QQ summary."""
+def format_filter_conditions(
+    direction: str = "both",
+    market: Market = "a",
+    *,
+    ma_min_daily_return: float | None = None,
+) -> str:
+    """Describe the active strategy conditions for a QQ summary.
+
+    When ``ma_min_daily_return`` is provided (the threshold actually used for
+    this scan), the MA slope wording uses that value. Otherwise it describes
+    the default 0.3% rule and the overflow raise to 0.6%.
+    """
     config = Rsi50Config()
     common = (
         f"共同：最新一天 RSI({config.rsi_period}) 位于 "
         f"{config.rsi_zone_low:g}–{config.rsi_zone_high:g}。"
     )
-    pct = (config.ma_fast_min_daily_return or 0.0) * 100
     overflow_pct = app_config.MA_FAST_OVERFLOW_MIN_DAILY_RETURN_PCT
     overflow_limit = app_config.MA_FAST_OVERFLOW_MATCH_LIMIT
-    ma_note = f"（命中超过 {overflow_limit} 只时升至 {overflow_pct:g}%）"
+    default_threshold = config.ma_fast_min_daily_return or 0.0
+    if ma_min_daily_return is None:
+        pct = default_threshold * 100
+        ma_note = f"（命中超过 {overflow_limit} 只时升至 {overflow_pct:g}%）"
+    else:
+        pct = ma_min_daily_return * 100
+        raised = ma_min_daily_return > default_threshold + 1e-12
+        ma_note = f"（命中超过 {overflow_limit} 只，已升至 {pct:g}%）" if raised else ""
     long_ma = (
         f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天上涨大于 "
         f"{pct:g}%{ma_note}"
@@ -501,7 +517,7 @@ def prepare_delivery(
         f"扫描 {batch.scanned_symbols} 只，停牌/陈旧 {batch.stale_symbols} 只，"
         f"命中 {len(batch.matches)} 只（多 {long_count} / 空 {short_count}），"
         f"图片消息 {len(images)} 条。\n\n"
-        f"{format_filter_conditions(market=market)}"
+        f"{format_filter_conditions(market=market, ma_min_daily_return=batch.ma_min_daily_return)}"
     )
     delivery = PreparedDelivery(
         batch.scan_date,

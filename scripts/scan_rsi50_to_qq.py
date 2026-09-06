@@ -130,7 +130,7 @@ def main() -> None:
         f"本次{'发送' if args.send else '选择'} {len(rendered)} 只，"
         f"图片消息 {len(delivery_images)} 条，"
         f"数据滞后 {data_age_days} 天\n\n"
-        f"{format_filter_conditions(args.direction, args.market)}"
+        f"{format_filter_conditions(args.direction, args.market, ma_min_daily_return=batch.ma_min_daily_return)}"
     )
     print(summary)
     print(f"图片目录: {output_dir}")

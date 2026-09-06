@@ -107,3 +107,11 @@ def test_us_share_summary_lists_same_filter_conditions() -> None:
         in text
     )
     assert "MA20 向上" not in text
+
+
+def test_summary_syncs_ma_threshold_when_overflow_applied() -> None:
+    text = format_filter_conditions("both", "a", ma_min_daily_return=0.006)
+
+    assert "平均每天上涨大于 0.6%" in text
+    assert "平均每天下跌大于 0.6%" in text
+    assert "大于 0.3%" not in text

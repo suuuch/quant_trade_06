@@ -94,6 +94,23 @@ def test_filter_conditions_describe_us_share_same_ma_rules() -> None:
     assert "MA20 向上" not in text
 
 
+def test_filter_conditions_sync_to_effective_overflow_threshold() -> None:
+    text = format_filter_conditions(ma_min_daily_return=0.006)
+
+    assert "平均每天上涨大于 0.6%（命中超过 100 只，已升至 0.6%）" in text
+    assert "平均每天下跌大于 0.6%（命中超过 100 只，已升至 0.6%）" in text
+    assert "大于 0.3%" not in text
+
+
+def test_filter_conditions_sync_to_effective_default_threshold() -> None:
+    text = format_filter_conditions(ma_min_daily_return=0.003)
+
+    assert "平均每天上涨大于 0.3%" in text
+    assert "平均每天下跌大于 0.3%" in text
+    assert "已升至" not in text
+    assert "时升至" not in text
+
+
 @pytest.mark.parametrize(
     ("content", "market", "pattern", "history"),
     [

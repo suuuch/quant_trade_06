@@ -143,18 +143,22 @@ def scan_symbol_frame(
     )
 
 
-def apply_overflow_ma_threshold(matches: list[SignalMatch]) -> list[SignalMatch]:
+def apply_overflow_ma_threshold(
+    matches: list[SignalMatch],
+) -> tuple[list[SignalMatch], float]:
     """Raise MA slope threshold when too many symbols pass the default filter.
 
     Default screening uses ``MA_FAST_MIN_DAILY_RETURN`` (0.3%/day). When more
     than ``MA_FAST_OVERFLOW_MATCH_LIMIT`` symbols match, re-screen survivors
     with ``MA_FAST_OVERFLOW_MIN_DAILY_RETURN`` (0.6%/day).
+
+    Returns the (possibly tightened) matches and the effective MA threshold.
     """
+    default_threshold = app_config.MA_FAST_MIN_DAILY_RETURN
     if len(matches) <= app_config.MA_FAST_OVERFLOW_MATCH_LIMIT:
-        return matches
-    tightened_config = Rsi50Config(
-        ma_fast_min_daily_return=app_config.MA_FAST_OVERFLOW_MIN_DAILY_RETURN
-    )
+        return matches, default_threshold
+    overflow_threshold = app_config.MA_FAST_OVERFLOW_MIN_DAILY_RETURN
+    tightened_config = Rsi50Config(ma_fast_min_daily_return=overflow_threshold)
     tightened: list[SignalMatch] = []
     for match in matches:
         rematch = scan_symbol_frame(
@@ -169,17 +173,19 @@ def apply_overflow_ma_threshold(matches: list[SignalMatch]) -> list[SignalMatch]
         )
         if rematch is not None:
             tightened.append(rematch)
-    return tightened
+    return tightened, overflow_threshold
 
 
 def _with_overflow_ma_threshold(
     batch: ScanBatch[SignalMatch],
 ) -> ScanBatch[SignalMatch]:
+    matches, threshold = apply_overflow_ma_threshold(batch.matches)
     return ScanBatch(
         batch.scan_date,
         batch.scanned_symbols,
         batch.stale_symbols,
-        apply_overflow_ma_threshold(batch.matches),
+        matches,
+        ma_min_daily_return=threshold,
     )
 
 

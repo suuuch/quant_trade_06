@@ -71,6 +71,7 @@ class ScanBatch(Generic[TMatch]):
     scanned_symbols: int
     stale_symbols: int
     matches: list[TMatch]
+    ma_min_daily_return: float | None = None
 
 
 # Compatibility aliases used by existing scanners and tests.
