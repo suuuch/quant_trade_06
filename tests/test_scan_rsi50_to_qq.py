@@ -98,14 +98,9 @@ def test_a_share_summary_lists_active_filter_conditions() -> None:
 def test_us_share_summary_lists_same_filter_conditions() -> None:
     text = format_filter_conditions("both", "us")
 
-    assert (
-        "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%（命中超过 100 只时升至 0.6%）"
-        in text
-    )
-    assert (
-        "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%（命中超过 100 只时升至 0.6%）"
-        in text
-    )
+    assert "MA20 或 MA30 过去 10 天平均每天上涨大于 0.3%" in text
+    assert "MA20 或 MA30 过去 10 天平均每天下跌大于 0.3%" in text
+    assert "升至" not in text
     assert "MA20 向上" not in text
 
 

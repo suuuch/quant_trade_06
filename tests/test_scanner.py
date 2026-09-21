@@ -334,6 +334,36 @@ def test_delivery_limit_keeps_highest_ranked_matches() -> None:
     assert [match.symbol for match in selected] == ["000001.SZ", "000002.SZ"]
 
 
+def test_apply_overflow_ma_threshold_keeps_us_market_fixed_at_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "quant_trade.scanner.app_config.MA_FAST_OVERFLOW_MATCH_LIMIT",
+        1,
+    )
+    frame = _latest_long_frame()
+    matches = [
+        match
+        for symbol in ("US.AAPL", "US.MSFT")
+        if (
+            match := scan_symbol_frame(
+                symbol,
+                "Test",
+                "Test",
+                frame,
+                market="us",
+            )
+        )
+        is not None
+    ]
+    assert len(matches) == 2
+
+    kept, threshold = apply_overflow_ma_threshold(matches, market="us")
+
+    assert kept == matches
+    assert threshold == pytest.approx(0.003)
+
+
 def test_apply_overflow_ma_threshold_keeps_batch_within_limit() -> None:
     frame = _latest_long_frame()
     matches = [

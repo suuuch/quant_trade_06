@@ -136,8 +136,9 @@ def format_filter_conditions(
     """Describe the active strategy conditions for a QQ summary.
 
     When ``ma_min_daily_return`` is provided (the threshold actually used for
-    this scan), the MA slope wording uses that value. Otherwise it describes
-    the default 0.3% rule and the overflow raise to 0.6%.
+    this scan), the MA slope wording uses that value. Otherwise A shares
+    describe the default 0.3% rule and the overflow raise to 0.6%, while US
+    shares stay fixed at 0.3%.
     """
     config = Rsi50Config()
     common = (
@@ -147,13 +148,16 @@ def format_filter_conditions(
     overflow_pct = app_config.MA_FAST_OVERFLOW_MIN_DAILY_RETURN_PCT
     overflow_limit = app_config.MA_FAST_OVERFLOW_MATCH_LIMIT
     default_threshold = config.ma_fast_min_daily_return or 0.0
-    if ma_min_daily_return is None:
+    if ma_min_daily_return is not None:
+        pct = ma_min_daily_return * 100
+        raised = market != "us" and ma_min_daily_return > default_threshold + 1e-12
+        ma_note = f"（命中超过 {overflow_limit} 只，已升至 {pct:g}%）" if raised else ""
+    elif market == "us":
+        pct = default_threshold * 100
+        ma_note = ""
+    else:
         pct = default_threshold * 100
         ma_note = f"（命中超过 {overflow_limit} 只时升至 {overflow_pct:g}%）"
-    else:
-        pct = ma_min_daily_return * 100
-        raised = ma_min_daily_return > default_threshold + 1e-12
-        ma_note = f"（命中超过 {overflow_limit} 只，已升至 {pct:g}%）" if raised else ""
     long_ma = (
         f"MA20 或 MA30 过去 {config.ma_fast_slope_days} 天平均每天上涨大于 "
         f"{pct:g}%{ma_note}"
