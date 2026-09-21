@@ -270,7 +270,7 @@ def test_render_signal_sheet_combines_charts(tmp_path: Path) -> None:
     assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
-def test_render_signal_sheet_uses_four_by_three_layout(
+def test_render_signal_sheet_uses_four_by_four_layout(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -287,9 +287,9 @@ def test_render_signal_sheet_uses_four_by_three_layout(
 
     monkeypatch.setattr(plt, "subplots", spy_subplots)
 
-    render_signal_sheet([chart] * 12, tmp_path / "batch.png")
+    render_signal_sheet([chart] * 16, tmp_path / "batch.png")
 
-    assert calls[-1] == (3, 4)
+    assert calls[-1] == (4, 4)
 
 
 def test_matches_are_sorted_by_market_cap_descending() -> None:

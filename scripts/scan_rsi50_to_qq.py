@@ -10,6 +10,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from quant_trade import config as app_config
 from quant_trade.qq_bot import QQBotClient, QQBotError, QQTargetType
 from quant_trade.qq_service import format_filter_conditions
 from quant_trade.rsi50 import Direction
@@ -61,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--charts-per-message",
         type=int,
-        default=12,
+        default=app_config.CHARTS_PER_MESSAGE,
         help="combine this many stock charts into each QQ image message",
     )
     parser.add_argument("--allow-stale-data", action="store_true")

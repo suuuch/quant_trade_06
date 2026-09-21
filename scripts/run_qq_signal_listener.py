@@ -8,6 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from quant_trade import config as app_config
 from quant_trade.qq_service import QQSignalService, required_qq_credentials
 from quant_trade.scanner import DatabaseSettings
 
@@ -19,7 +20,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-seconds", type=float, default=300.0)
     parser.add_argument("--send-delay", type=float, default=3.0)
     parser.add_argument("--lookback-bars", type=int, default=240)
-    parser.add_argument("--charts-per-message", type=int, default=12)
+    parser.add_argument(
+        "--charts-per-message",
+        type=int,
+        default=app_config.CHARTS_PER_MESSAGE,
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,

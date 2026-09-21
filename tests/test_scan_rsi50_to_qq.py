@@ -49,24 +49,24 @@ def test_qq_delivery_defaults_to_group(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.target_type == "group"
 
 
-def test_qq_delivery_defaults_to_twelve_charts_per_message(
+def test_qq_delivery_defaults_to_sixteen_charts_per_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "argv", ["scan_rsi50_to_qq.py"])
 
     args = parse_args()
 
-    assert args.charts_per_message == 12
+    assert args.charts_per_message == 16
 
 
-def test_listener_defaults_to_twelve_charts_per_message(
+def test_listener_defaults_to_sixteen_charts_per_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "argv", ["run_qq_signal_listener.py"])
 
     args = parse_listener_args()
 
-    assert args.charts_per_message == 12
+    assert args.charts_per_message == 16
 
 
 def test_default_group_target_comes_from_environment(
